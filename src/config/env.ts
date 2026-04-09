@@ -21,6 +21,8 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().max(65535).default(3000),
   /** Comma-separated allowed origins, or omit to reflect the request origin (dev-friendly). */
   CORS_ORIGIN: z.string().optional(),
+  JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
+  JWT_EXPIRES_IN: z.string().optional(),
   DATABASE_URL: z
     .string()
     .min(1, "DATABASE_URL is required")

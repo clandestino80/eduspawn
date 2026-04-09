@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { Router } from "express";
 import { analyticsRouter } from "../modules/analytics/analytics.routes";
 import { aiRouter } from "../modules/ai/ai.routes";
-import { authRouter } from "../modules/auth/auth.routes";
+import { authRouter } from "../modules/auth/auth.route";
 import { healthRouter } from "../modules/health/health.routes";
 import { wikiAgentRouter } from "../modules/wiki-agent/wiki-agent.routes";
 
@@ -16,5 +16,6 @@ v1.use("/wiki-agent", wikiAgentRouter);
 
 export function registerRoutes(app: Express): void {
   app.use("/health", healthRouter);
+  app.use("/auth", authRouter);
   app.use("/api/v1", v1);
 }
