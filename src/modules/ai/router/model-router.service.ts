@@ -28,7 +28,7 @@ type RouteProfile = {
 type RouteByTier = Record<PlanTier, RouteProfile>;
 
 const DEFAULT_MODELS = {
-  openaiFast: "gpt-5-mini",
+  openaiFast: "gpt-4o-mini",
   openaiSmart: "gpt-5",
 
   anthropicFast: "claude-haiku-4-5",
