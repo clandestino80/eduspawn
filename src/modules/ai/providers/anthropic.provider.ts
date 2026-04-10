@@ -36,6 +36,7 @@ type AnthropicResponse = {
   role?: string;
   content?: AnthropicContentBlock[];
   stop_reason?: string | null;
+  stop_sequence?: string | null;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -46,21 +47,30 @@ type AnthropicResponse = {
   };
 };
 
-const ANTHROPIC_VERSION = "2023-06-01";
-
-const MODEL_ALIASES: Readonly<Record<string, string>> = {
-  "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
-  "claude-3-7-sonnet": "claude-3-7-sonnet-20250219",
-};
-
 type CostRates = {
   inputPerMillion: number;
   outputPerMillion: number;
 };
 
+const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
+
 /**
- * Conservative pricing defaults used only for estimation.
- * Keep these aligned with your internal billing assumptions if needed.
+ * Legacy aliases supported for backward compatibility.
+ * Current router/env values like:
+ * - claude-haiku-4-5
+ * - claude-sonnet-4-6
+ * - claude-opus-4-6
+ * are passed through unchanged.
+ */
+const LEGACY_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
+  "claude-3-7-sonnet": "claude-3-7-sonnet-20250219",
+};
+
+/**
+ * Conservative estimation table.
+ * Keep intentionally sparse unless you want to maintain exact pricing.
  */
 const MODEL_COSTS: Readonly<Record<string, CostRates>> = {
   "claude-3-5-sonnet-20241022": {
@@ -73,6 +83,22 @@ const MODEL_COSTS: Readonly<Record<string, CostRates>> = {
   },
 };
 
+function readEnv(key: string): string | undefined {
+  const value = process.env[key]?.trim();
+  return value ? value : undefined;
+}
+
+function getAnthropicBaseUrl(): string {
+  return (readEnv("ANTHROPIC_BASE_URL") ?? DEFAULT_ANTHROPIC_BASE_URL).replace(
+    /\/+$/,
+    "",
+  );
+}
+
+function getAnthropicVersion(): string {
+  return readEnv("ANTHROPIC_VERSION") ?? DEFAULT_ANTHROPIC_VERSION;
+}
+
 function resolveAnthropicModelId(model: string): string {
   const trimmed = model.trim();
 
@@ -80,11 +106,11 @@ function resolveAnthropicModelId(model: string): string {
     return trimmed;
   }
 
-  if (/-\d{8}$/.test(trimmed)) {
-    return trimmed;
+  if (LEGACY_MODEL_ALIASES[trimmed]) {
+    return LEGACY_MODEL_ALIASES[trimmed];
   }
 
-  return MODEL_ALIASES[trimmed] ?? trimmed;
+  return trimmed;
 }
 
 function normalizeMessageContent(content: string): string {
@@ -96,7 +122,10 @@ function splitSystemAndConversation(messages: AiMessage[]): {
   conversation: AnthropicMessage[];
 } {
   const systemParts: string[] = [];
-  const nonSystem: AiMessage[] = [];
+  const nonSystem: Array<{
+    role: "user" | "assistant";
+    content: string;
+  }> = [];
 
   for (const message of messages) {
     const normalizedContent = normalizeMessageContent(message.content);
@@ -112,7 +141,7 @@ function splitSystemAndConversation(messages: AiMessage[]): {
 
     if (message.role === "user" || message.role === "assistant") {
       nonSystem.push({
-        ...message,
+        role: message.role,
         content: normalizedContent,
       });
     }
@@ -134,15 +163,11 @@ function splitSystemAndConversation(messages: AiMessage[]): {
     });
   }
 
-  /**
-   * Anthropic expects the conversation to begin with a user turn.
-   * If upstream context starts with assistant, prepend a bridging user turn.
-   */
   if (merged.length > 0 && merged[0]?.role === "assistant") {
     merged.unshift({
       role: "user",
       content:
-        "Use the following assistant context as continuation of a prior turn; respond accordingly.",
+        "Use the following assistant context as continuation of a prior turn and respond accordingly.",
     });
   }
 
@@ -152,8 +177,9 @@ function splitSystemAndConversation(messages: AiMessage[]): {
   };
 }
 
+
 function mapAnthropicFinishReason(
-  raw: string | null | undefined
+  raw: string | null | undefined,
 ): AiGenerationOutput["finishReason"] {
   switch (raw) {
     case "end_turn":
@@ -168,6 +194,24 @@ function mapAnthropicFinishReason(
   }
 }
 
+function resolveAnthropicCostRates(model: string): CostRates | undefined {
+  const normalized = model.trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (MODEL_COSTS[normalized]) {
+    return MODEL_COSTS[normalized];
+  }
+
+  const matchedKey = Object.keys(MODEL_COSTS)
+    .sort((a, b) => b.length - a.length)
+    .find((key) => normalized.startsWith(key));
+
+  return matchedKey ? MODEL_COSTS[matchedKey] : undefined;
+}
+
 function estimateAnthropicCostUsd(params: {
   model: string;
   promptTokens: number;
@@ -180,7 +224,7 @@ function estimateAnthropicCostUsd(params: {
     return 0;
   }
 
-  const rates = MODEL_COSTS[params.model];
+  const rates = resolveAnthropicCostRates(params.model);
 
   if (!rates) {
     return undefined;
@@ -195,7 +239,7 @@ function estimateAnthropicCostUsd(params: {
 
 function extractAnthropicErrorMessage(
   payload: AnthropicResponse | string | null,
-  fallback: string
+  fallback: string,
 ): string {
   if (typeof payload === "string") {
     const trimmed = payload.trim();
@@ -209,18 +253,49 @@ function extractAnthropicErrorMessage(
   return fallback;
 }
 
-function extractAnthropicText(payload: AnthropicResponse): string {
+function extractAnthropicText(payload: AnthropicResponse): {
+  text: string;
+  contentTypes: string[];
+} {
   if (!Array.isArray(payload.content)) {
-    return "";
+    return {
+      text: "",
+      contentTypes: [],
+    };
   }
 
-  return payload.content
+  const contentTypes = payload.content
+    .map((block) => block?.type)
+    .filter((type): type is string => typeof type === "string");
+
+  const text = payload.content
     .filter(
-      (block) => block?.type === "text" && typeof block.text === "string"
+      (block) => block?.type === "text" && typeof block.text === "string",
     )
     .map((block) => block.text ?? "")
     .join("")
     .trim();
+
+  return {
+    text,
+    contentTypes,
+  };
+}
+
+function buildAnthropicHeaders(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    "x-api-key": apiKey,
+    "anthropic-version": getAnthropicVersion(),
+    "Content-Type": "application/json",
+  };
+
+  const beta = readEnv("ANTHROPIC_BETA");
+
+  if (beta) {
+    headers["anthropic-beta"] = beta;
+  }
+
+  return headers;
 }
 
 export class AnthropicProvider implements AiProvider {
@@ -228,14 +303,14 @@ export class AnthropicProvider implements AiProvider {
 
   async generate(
     input: AiGenerationInput,
-    route: ModelRouteDecision
+    route: ModelRouteDecision,
   ): Promise<AiGenerationOutput> {
-    const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+    const apiKey = readEnv("ANTHROPIC_API_KEY");
 
     if (!apiKey) {
       throw new AiProviderConfigurationError(
         this.name,
-        "Anthropic is not configured: set ANTHROPIC_API_KEY in the environment."
+        "Anthropic is not configured: set ANTHROPIC_API_KEY in the environment.",
       );
     }
 
@@ -243,7 +318,7 @@ export class AnthropicProvider implements AiProvider {
     const effectiveTemperature = resolveEffectiveTemperature(input, route);
     const effectiveMaxTokens = Math.max(
       1,
-      resolveEffectiveMaxTokens(input, route)
+      resolveEffectiveMaxTokens(input, route),
     );
 
     const sourceMessages =
@@ -251,8 +326,7 @@ export class AnthropicProvider implements AiProvider {
         ? augmentMessagesForJsonMode(input.messages)
         : input.messages;
 
-    const { system, conversation } =
-      splitSystemAndConversation(sourceMessages);
+    const { system, conversation } = splitSystemAndConversation(sourceMessages);
 
     if (conversation.length === 0) {
       throw new AiProviderHttpError(
@@ -262,13 +336,14 @@ export class AnthropicProvider implements AiProvider {
         {
           request: {
             provider: this.name,
+            endpoint: `${getAnthropicBaseUrl()}/v1/messages`,
             model: route.model,
             taskType: input.taskType,
             planTier: input.planTier,
             responseFormat,
             messageCount: sourceMessages.length,
           },
-        }
+        },
       );
     }
 
@@ -287,22 +362,19 @@ export class AnthropicProvider implements AiProvider {
 
     const requestSummary = {
       provider: this.name,
+      endpoint: `${getAnthropicBaseUrl()}/v1/messages`,
       model: modelId,
+      originalRouteModel: route.model,
       taskType: input.taskType,
       planTier: input.planTier,
       responseFormat,
       messageCount: sourceMessages.length,
       conversationCount: conversation.length,
+      hasSystemPrompt: Boolean(system),
       temperature: effectiveTemperature,
       maxTokens: effectiveMaxTokens,
       jsonMode: responseFormat === "json",
       metadata: input.metadata ?? null,
-    };
-
-    const headers: Record<string, string> = {
-      "x-api-key": apiKey,
-      "anthropic-version": ANTHROPIC_VERSION,
-      "Content-Type": "application/json",
     };
 
     const { signal, cancel } = createAbortHandle(PROVIDER_FETCH_TIMEOUT_MS);
@@ -311,9 +383,9 @@ export class AnthropicProvider implements AiProvider {
     let res: Response;
 
     try {
-      res = await fetch("https://api.anthropic.com/v1/messages", {
+      res = await fetch(`${getAnthropicBaseUrl()}/v1/messages`, {
         method: "POST",
-        headers,
+        headers: buildAnthropicHeaders(apiKey),
         body: JSON.stringify(body),
         signal,
       });
@@ -329,7 +401,7 @@ export class AnthropicProvider implements AiProvider {
             reason: "timeout",
             timeoutMs: PROVIDER_FETCH_TIMEOUT_MS,
             request: requestSummary,
-          }
+          },
         );
       }
 
@@ -342,7 +414,7 @@ export class AnthropicProvider implements AiProvider {
         {
           cause: String(err),
           request: requestSummary,
-        }
+        },
       );
     } finally {
       cancel();
@@ -365,7 +437,7 @@ export class AnthropicProvider implements AiProvider {
         {
           request: requestSummary,
           response: payload,
-        }
+        },
       );
     }
 
@@ -377,16 +449,28 @@ export class AnthropicProvider implements AiProvider {
         {
           request: requestSummary,
           response: payload,
-        }
+        },
       );
     }
 
-    const rawText = extractAnthropicText(payload);
+    const extracted = extractAnthropicText(payload);
+
+    if (!extracted.text && extracted.contentTypes.length > 0) {
+      throw new AiProviderHttpError(
+        this.name,
+        422,
+        `Anthropic returned no text content. Content block types: ${extracted.contentTypes.join(", ")}`,
+        {
+          request: requestSummary,
+          response: payload,
+        },
+      );
+    }
 
     const content: unknown =
       responseFormat === "json"
-        ? normalizeJsonModeContent(rawText)
-        : rawText;
+        ? normalizeJsonModeContent(extracted.text)
+        : extracted.text;
 
     assertNonEmptyContent(content, this.name);
 
@@ -402,28 +486,35 @@ export class AnthropicProvider implements AiProvider {
       completionTokens,
     });
 
-    return {
-      provider: this.name,
-      model: resolvedResponseModel,
-      content,
-      usage: {
-        promptTokens,
-        completionTokens,
-        totalTokens,
-      },
-      costEstimate,
-      latencyMs,
-      finishReason: mapAnthropicFinishReason(payload.stop_reason),
-      raw: {
-        request: requestSummary,
-        json_mode: responseFormat === "json",
-        estimated_cost_usd: costEstimate,
-        id: payload.id,
-        model: payload.model,
-        role: payload.role,
-        stop_reason: payload.stop_reason,
-        response: payload,
-      },
-    };
+    const output: AiGenerationOutput = {
+  provider: this.name,
+  model: resolvedResponseModel,
+  content,
+  usage: {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+  },
+  latencyMs,
+  finishReason: mapAnthropicFinishReason(payload.stop_reason),
+  raw: {
+    request: requestSummary,
+    json_mode: responseFormat === "json",
+    estimated_cost_usd: costEstimate,
+    id: payload.id,
+    model: payload.model,
+    role: payload.role,
+    stop_reason: payload.stop_reason,
+    stop_sequence: payload.stop_sequence,
+    response: payload,
+  },
+};
+
+if (costEstimate !== undefined) {
+  output.costEstimate = costEstimate;
+}
+
+return output;
+
   }
 }

@@ -11,15 +11,21 @@ const JSON_MODE_HINT =
 
 export const PROVIDER_FETCH_TIMEOUT_MS = 180_000;
 
+function clampTemperature(value: number): number {
+  return Math.max(0, Math.min(2, value));
+}
+
 export function resolveEffectiveMaxTokens(
   input: AiGenerationInput,
   route: ModelRouteDecision,
 ): number {
-  const cap = route.maxTokens;
+  const cap = Math.max(1, Math.floor(route.maxTokens));
   const fromInput = input.maxTokens;
+
   if (fromInput !== undefined && Number.isFinite(fromInput) && fromInput > 0) {
     return Math.min(Math.floor(fromInput), cap);
   }
+
   return cap;
 }
 
@@ -28,44 +34,67 @@ export function resolveEffectiveTemperature(
   route: ModelRouteDecision,
 ): number {
   const fromInput = input.temperature;
+
   if (fromInput !== undefined && Number.isFinite(fromInput)) {
-    return Math.max(0, Math.min(2, fromInput));
+    return clampTemperature(fromInput);
   }
-  return route.temperature;
+
+  return clampTemperature(route.temperature);
 }
 
 /** When providers need explicit JSON instruction (esp. OpenAI json_object). */
 export function augmentMessagesForJsonMode(messages: AiMessage[]): AiMessage[] {
   const firstSystemIdx = messages.findIndex((m) => m.role === "system");
+
   if (firstSystemIdx >= 0) {
     const copy = [...messages];
-    const m = copy[firstSystemIdx];
-    if (m) {
+    const existing = copy[firstSystemIdx];
+
+    if (existing) {
+      const alreadyHasHint = existing.content.includes(JSON_MODE_HINT);
+
       copy[firstSystemIdx] = {
         role: "system",
-        content: `${m.content}\n\n${JSON_MODE_HINT}`,
+        content: alreadyHasHint
+          ? existing.content
+          : `${existing.content}\n\n${JSON_MODE_HINT}`,
       };
     }
+
     return copy;
   }
+
   return [{ role: "system", content: JSON_MODE_HINT }, ...messages];
 }
 
 export function unwrapMarkdownJson(text: string): string {
-  const t = text.trim();
-  const fence = /^```(?:json)?\s*([\s\S]*?)```$/im.exec(t);
-  if (fence?.[1]) {
-    return fence[1].trim();
+  const trimmed = text.trim();
+
+  if (!trimmed) {
+    return "";
   }
-  return t;
+
+  const exactFenceMatch = /^```(?:json)?\s*([\s\S]*?)```$/im.exec(trimmed);
+  if (exactFenceMatch?.[1]) {
+    return exactFenceMatch[1].trim();
+  }
+
+  const firstFenceMatch = /```(?:json)?\s*([\s\S]*?)```/im.exec(trimmed);
+  if (firstFenceMatch?.[1]) {
+    return firstFenceMatch[1].trim();
+  }
+
+  return trimmed;
 }
 
 /** Parse JSON mode text into object when possible; otherwise return trimmed string. */
 export function normalizeJsonModeContent(text: string): unknown {
   const trimmed = unwrapMarkdownJson(text);
+
   if (!trimmed) {
     return "";
   }
+
   try {
     return JSON.parse(trimmed) as unknown;
   } catch {
@@ -84,6 +113,7 @@ export function assertNonEmptyContent(
       "Model returned empty content.",
     );
   }
+
   if (typeof value === "string" && value.trim().length === 0) {
     throw new AiProviderResponseError(
       provider,
@@ -95,9 +125,11 @@ export function assertNonEmptyContent(
 
 export async function readResponseBody(res: Response): Promise<unknown> {
   const text = await res.text();
+
   if (!text.trim()) {
     return null;
   }
+
   try {
     return JSON.parse(text) as unknown;
   } catch {
@@ -105,11 +137,22 @@ export async function readResponseBody(res: Response): Promise<unknown> {
   }
 }
 
-export function createAbortHandle(ms: number): { signal: AbortSignal; cancel: () => void } {
+export function createAbortHandle(
+  ms: number,
+): { signal: AbortSignal; cancel: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
+
+  if (typeof (timer as NodeJS.Timeout).unref === "function") {
+    (timer as NodeJS.Timeout).unref();
+  }
+
   const cancel = (): void => {
     clearTimeout(timer);
   };
-  return { signal: controller.signal, cancel };
+
+  return {
+    signal: controller.signal,
+    cancel,
+  };
 }

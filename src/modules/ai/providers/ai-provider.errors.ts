@@ -34,6 +34,7 @@ export class AiProviderHttpError extends Error {
 }
 
 export class AiProviderResponseError extends Error {
+  readonly code = "RESPONSE_ERROR" as const;
   readonly provider: AiProviderName;
   readonly responseCode: "EMPTY_RESPONSE" | "INVALID_RESPONSE";
 

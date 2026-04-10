@@ -2,6 +2,7 @@ import {
   AiProviderConfigurationError,
   AiProviderHttpError,
 } from "./ai-provider.errors";
+
 import type {
   AiGenerationInput,
   AiGenerationOutput,
@@ -9,6 +10,7 @@ import type {
   AiProvider,
   ModelRouteDecision,
 } from "./ai-provider.types";
+
 import {
   augmentMessagesForJsonMode,
   assertNonEmptyContent,
@@ -51,39 +53,120 @@ type OpenAiChatCompletionResponse = {
   };
 };
 
-type CostRates = {
-  inputPerMillion: number;
-  outputPerMillion: number;
+type OpenAiResponsesInputItem = {
+  role: "system" | "user" | "assistant";
+  content: Array<{ type: "input_text"; text: string }>;
 };
 
-/**
- * Conservative pricing table used only for internal estimation.
- * Adjust these values if your billing logic differs.
- */
-const MODEL_COSTS: Readonly<Record<string, CostRates>> = {
-  "gpt-4.1": {
-    inputPerMillion: 2,
-    outputPerMillion: 8,
-  },
-  "gpt-4.1-mini": {
-    inputPerMillion: 0.4,
-    outputPerMillion: 1.6,
-  },
-  "gpt-4.1-nano": {
-    inputPerMillion: 0.1,
-    outputPerMillion: 0.4,
-  },
-  "gpt-4o": {
-    inputPerMillion: 2.5,
-    outputPerMillion: 10,
-  },
-  "gpt-4o-mini": {
-    inputPerMillion: 0.15,
-    outputPerMillion: 0.6,
-  },
+type OpenAiResponsesOutputContent = {
+  type?: string;
+  text?: string | null;
+  refusal?: string | null;
 };
 
-function mapOpenAiFinishReason(
+type OpenAiResponsesOutputItem = {
+  type?: string;
+  role?: string;
+  status?: string;
+  content?: OpenAiResponsesOutputContent[];
+};
+
+type OpenAiResponsesResponse = {
+  id?: string;
+  model?: string;
+  created_at?: number;
+  status?: string;
+  output?: OpenAiResponsesOutputItem[];
+  output_text?: string | string[];
+  incomplete_details?: {
+    reason?: string | null;
+  };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  };
+  error?: {
+    message?: string;
+    type?: string;
+    code?: string;
+  };
+};
+
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+
+function readEnv(key: string): string | undefined {
+  const value = process.env[key]?.trim();
+  return value || undefined;
+}
+
+function normalizeMessageContent(content: string): string {
+  return content.replace(/\r\n/g, "\n").trim();
+}
+
+function toOpenAiChatMessages(messages: AiMessage[]): OpenAiChatMessage[] {
+  const normalized: OpenAiChatMessage[] = [];
+
+  for (const message of messages) {
+    if (
+      message.role !== "system" &&
+      message.role !== "user" &&
+      message.role !== "assistant"
+    ) {
+      continue;
+    }
+
+    const content = normalizeMessageContent(message.content);
+    if (!content) continue;
+
+    const last = normalized[normalized.length - 1];
+
+    if (last && last.role === message.role) {
+      last.content += `\n\n${content}`;
+    } else {
+      normalized.push({ role: message.role, content });
+    }
+  }
+
+  return normalized;
+}
+
+function toOpenAiResponsesInput(
+  messages: AiMessage[],
+): OpenAiResponsesInputItem[] {
+  return toOpenAiChatMessages(messages).map((message) => ({
+    role: message.role,
+    content: [{ type: "input_text", text: message.content }],
+  }));
+}
+
+function shouldUseResponsesApi(model: string): boolean {
+  return model.trim().toLowerCase().startsWith("gpt-5");
+}
+
+function getOpenAiBaseUrl(): string {
+  return (readEnv("OPENAI_BASE_URL") ?? DEFAULT_OPENAI_BASE_URL).replace(
+    /\/+$/,
+    "",
+  );
+}
+
+function buildOpenAiHeaders(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const org = readEnv("OPENAI_ORGANIZATION");
+  const proj = readEnv("OPENAI_PROJECT");
+
+  if (org) headers["OpenAI-Organization"] = org;
+  if (proj) headers["OpenAI-Project"] = proj;
+
+  return headers;
+}
+
+function mapChatFinishReason(
   raw: string | null | undefined,
 ): AiGenerationOutput["finishReason"] {
   switch (raw) {
@@ -99,76 +182,34 @@ function mapOpenAiFinishReason(
   }
 }
 
-function normalizeMessageContent(content: string): string {
-  return content.replace(/\r\n/g, "\n").trim();
-}
-
-function toOpenAiMessages(messages: AiMessage[]): OpenAiChatMessage[] {
-  const normalized: OpenAiChatMessage[] = [];
-
-  for (const message of messages) {
-    if (
-      message.role !== "system" &&
-      message.role !== "user" &&
-      message.role !== "assistant"
-    ) {
-      continue;
-    }
-
-    const content = normalizeMessageContent(message.content);
-
-    if (!content) {
-      continue;
-    }
-
-    const last = normalized[normalized.length - 1];
-
-    if (last && last.role === message.role) {
-      last.content = `${last.content}\n\n${content}`;
-      continue;
-    }
-
-    normalized.push({
-      role: message.role,
-      content,
-    });
+function mapResponsesFinishReason(
+  status: string | null | undefined,
+  incompleteReason?: string | null,
+): AiGenerationOutput["finishReason"] {
+  if (status === "completed") {
+    return "stop";
   }
 
-  return normalized;
-}
-
-function estimateOpenAiCostUsd(params: {
-  model: string;
-  promptTokens: number;
-  completionTokens: number;
-}): number | undefined {
-  const promptTokens = Math.max(0, params.promptTokens);
-  const completionTokens = Math.max(0, params.completionTokens);
-
-  if (promptTokens === 0 && completionTokens === 0) {
-    return 0;
+  if (
+    incompleteReason === "max_output_tokens" ||
+    incompleteReason === "max_tokens"
+  ) {
+    return "length";
   }
 
-  const rates = MODEL_COSTS[params.model];
-
-  if (!rates) {
-    return undefined;
-  }
-
-  const estimatedUsd =
-    (promptTokens / 1_000_000) * rates.inputPerMillion +
-    (completionTokens / 1_000_000) * rates.outputPerMillion;
-
-  return Number(estimatedUsd.toFixed(6));
+  return "unknown";
 }
 
 function extractOpenAiErrorMessage(
-  payload: OpenAiChatCompletionResponse | string | null,
+  payload:
+    | OpenAiChatCompletionResponse
+    | OpenAiResponsesResponse
+    | string
+    | null,
   fallback: string,
 ): string {
   if (typeof payload === "string") {
-    const trimmed = payload.trim();
-    return trimmed || fallback;
+    return payload.trim() || fallback;
   }
 
   if (payload?.error?.message) {
@@ -178,19 +219,115 @@ function extractOpenAiErrorMessage(
   return fallback;
 }
 
-function extractChoiceText(choice: OpenAiChatCompletionChoice | undefined): {
+function extractChatText(choice?: OpenAiChatCompletionChoice): {
   text: string;
   refusal: string;
 } {
-  const text =
-    typeof choice?.message?.content === "string" ? choice.message.content : "";
-  const refusal =
-    typeof choice?.message?.refusal === "string" ? choice.message.refusal : "";
-
   return {
-    text: text.trim(),
-    refusal: refusal.trim(),
+    text: choice?.message?.content?.trim() || "",
+    refusal: choice?.message?.refusal?.trim() || "",
   };
+}
+
+function extractResponsesText(payload: OpenAiResponsesResponse): {
+  text: string;
+  refusal: string;
+} {
+  if (typeof payload.output_text === "string" && payload.output_text.trim()) {
+    return {
+      text: payload.output_text.trim(),
+      refusal: "",
+    };
+  }
+
+  if (Array.isArray(payload.output_text)) {
+    const joined = payload.output_text
+      .filter((item): item is string => typeof item === "string")
+      .join("\n")
+      .trim();
+
+    if (joined) {
+      return {
+        text: joined,
+        refusal: "",
+      };
+    }
+  }
+
+  let text = "";
+  let refusal = "";
+
+  for (const item of payload.output ?? []) {
+    for (const content of item.content ?? []) {
+      if (!text && typeof content.text === "string" && content.text.trim()) {
+        text = content.text.trim();
+      }
+
+      if (
+        !refusal &&
+        typeof content.refusal === "string" &&
+        content.refusal.trim()
+      ) {
+        refusal = content.refusal.trim();
+      }
+    }
+  }
+
+  return { text, refusal };
+}
+
+async function postJson<T>(
+  url: string,
+  apiKey: string,
+  body: object,
+  requestSummary: Record<string, unknown>,
+): Promise<{ response: Response; payload: T | string | null; latencyMs: number }> {
+  const { signal, cancel } = createAbortHandle(PROVIDER_FETCH_TIMEOUT_MS);
+  const start = Date.now();
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: buildOpenAiHeaders(apiKey),
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    const payload = (await readResponseBody(response)) as T | string | null;
+
+    return {
+      response,
+      payload,
+      latencyMs: Date.now() - start,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new AiProviderHttpError(
+        "openai",
+        408,
+        "OpenAI request timed out.",
+        {
+          reason: "timeout",
+          timeoutMs: PROVIDER_FETCH_TIMEOUT_MS,
+          request: requestSummary,
+        },
+      );
+    }
+
+    throw new AiProviderHttpError(
+      "openai",
+      0,
+      `OpenAI network error: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      {
+        cause: String(error),
+        request: requestSummary,
+      },
+    );
+  } finally {
+    cancel();
+  }
 }
 
 export class OpenAiProvider implements AiProvider {
@@ -200,132 +337,91 @@ export class OpenAiProvider implements AiProvider {
     input: AiGenerationInput,
     route: ModelRouteDecision,
   ): Promise<AiGenerationOutput> {
-    const apiKey = process.env.OPENAI_API_KEY?.trim();
+    const apiKey = readEnv("OPENAI_API_KEY");
 
     if (!apiKey) {
       throw new AiProviderConfigurationError(
         this.name,
-        "OpenAI is not configured: set OPENAI_API_KEY in the environment.",
+        "Missing OPENAI_API_KEY",
       );
     }
 
-    const responseFormat = route.responseFormat;
-    const effectiveTemperature = resolveEffectiveTemperature(input, route);
-    const effectiveMaxTokens = Math.max(
-      1,
-      resolveEffectiveMaxTokens(input, route),
-    );
-
     const sourceMessages =
-      responseFormat === "json"
+      route.responseFormat === "json"
         ? augmentMessagesForJsonMode(input.messages)
         : input.messages;
 
-    const messages = toOpenAiMessages(sourceMessages);
+    if (shouldUseResponsesApi(route.model)) {
+      return this.generateResponses(apiKey, input, route, sourceMessages);
+    }
 
-    if (messages.length === 0) {
+    return this.generateChat(apiKey, input, route, sourceMessages);
+  }
+
+  private async generateChat(
+    apiKey: string,
+    input: AiGenerationInput,
+    route: ModelRouteDecision,
+    messages: AiMessage[],
+  ): Promise<AiGenerationOutput> {
+    const normalizedMessages = toOpenAiChatMessages(messages);
+
+    if (normalizedMessages.length === 0) {
       throw new AiProviderHttpError(
         this.name,
         400,
         "OpenAI requires at least one non-empty message.",
         {
-          request: {
-            provider: this.name,
-            model: route.model,
-            taskType: input.taskType,
-            planTier: input.planTier,
-            responseFormat,
-            messageCount: sourceMessages.length,
-          },
+          provider: this.name,
+          model: route.model,
+          taskType: input.taskType,
+          planTier: input.planTier,
+          responseFormat: route.responseFormat,
+          messageCount: messages.length,
         },
       );
     }
 
     const body: Record<string, unknown> = {
       model: route.model,
-      messages,
-      temperature: effectiveTemperature,
-      max_tokens: effectiveMaxTokens,
+      messages: normalizedMessages,
+      temperature: resolveEffectiveTemperature(input, route),
+      max_tokens: resolveEffectiveMaxTokens(input, route),
     };
 
-    if (responseFormat === "json") {
+    if (route.responseFormat === "json") {
       body.response_format = { type: "json_object" };
     }
 
     const requestSummary = {
       provider: this.name,
+      apiStyle: "chat_completions",
+      endpoint: `${getOpenAiBaseUrl()}/chat/completions`,
       model: route.model,
       taskType: input.taskType,
       planTier: input.planTier,
-      responseFormat,
-      messageCount: sourceMessages.length,
-      normalizedMessageCount: messages.length,
-      temperature: effectiveTemperature,
-      maxTokens: effectiveMaxTokens,
-      jsonMode: responseFormat === "json",
+      responseFormat: route.responseFormat,
+      messageCount: messages.length,
+      normalizedMessageCount: normalizedMessages.length,
+      temperature: resolveEffectiveTemperature(input, route),
+      maxTokens: resolveEffectiveMaxTokens(input, route),
+      jsonMode: route.responseFormat === "json",
       metadata: input.metadata ?? null,
     };
 
-    const { signal, cancel } = createAbortHandle(PROVIDER_FETCH_TIMEOUT_MS);
-    const started = Date.now();
-
-    let res: Response;
-
-    try {
-      res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-        signal,
-      });
-    } catch (err) {
-      cancel();
-
-      if (err instanceof Error && err.name === "AbortError") {
-        throw new AiProviderHttpError(
-          this.name,
-          408,
-          "OpenAI request timed out.",
-          {
-            reason: "timeout",
-            timeoutMs: PROVIDER_FETCH_TIMEOUT_MS,
-            request: requestSummary,
-          },
-        );
-      }
-
-      throw new AiProviderHttpError(
-        this.name,
-        0,
-        `OpenAI network error: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-        {
-          cause: String(err),
-          request: requestSummary,
-        },
+    const { response, payload, latencyMs } =
+      await postJson<OpenAiChatCompletionResponse>(
+        `${getOpenAiBaseUrl()}/chat/completions`,
+        apiKey,
+        body,
+        requestSummary,
       );
-    } finally {
-      cancel();
-    }
 
-    const latencyMs = Date.now() - started;
-
-    const payload = (await readResponseBody(res)) as
-      | OpenAiChatCompletionResponse
-      | string
-      | null;
-
-    if (!res.ok) {
-      const message = extractOpenAiErrorMessage(payload, res.statusText);
-
+    if (!response.ok) {
       throw new AiProviderHttpError(
         this.name,
-        res.status,
-        `OpenAI API error: ${message}`,
+        response.status,
+        `OpenAI API error: ${extractOpenAiErrorMessage(payload, response.statusText)}`,
         {
           request: requestSummary,
           response: payload,
@@ -336,7 +432,7 @@ export class OpenAiProvider implements AiProvider {
     if (typeof payload !== "object" || payload === null) {
       throw new AiProviderHttpError(
         this.name,
-        res.status,
+        response.status,
         "OpenAI returned an unexpected response body.",
         {
           request: requestSummary,
@@ -346,7 +442,7 @@ export class OpenAiProvider implements AiProvider {
     }
 
     const choice = payload.choices?.[0];
-    const { text, refusal } = extractChoiceText(choice);
+    const { text, refusal } = extractChatText(choice);
 
     if (!text && refusal) {
       throw new AiProviderHttpError(
@@ -354,60 +450,173 @@ export class OpenAiProvider implements AiProvider {
         422,
         `OpenAI refused to generate content: ${refusal}`,
         {
+          request: requestSummary,
+          response: payload,
           refusal,
+        },
+      );
+    }
+
+    const content: unknown =
+      route.responseFormat === "json"
+        ? normalizeJsonModeContent(text)
+        : text;
+
+    assertNonEmptyContent(content, this.name);
+
+    return {
+      provider: this.name,
+      model: payload.model ?? route.model,
+      content,
+      usage: {
+        promptTokens: payload.usage?.prompt_tokens ?? 0,
+        completionTokens: payload.usage?.completion_tokens ?? 0,
+        totalTokens: payload.usage?.total_tokens ?? 0,
+      },
+      latencyMs,
+      finishReason: mapChatFinishReason(choice?.finish_reason),
+      raw: {
+        request: requestSummary,
+        id: payload.id,
+        created: payload.created,
+        model: payload.model,
+        system_fingerprint: payload.system_fingerprint,
+        finish_reason: choice?.finish_reason,
+        response: payload,
+      },
+    };
+  }
+
+  private async generateResponses(
+    apiKey: string,
+    input: AiGenerationInput,
+    route: ModelRouteDecision,
+    messages: AiMessage[],
+  ): Promise<AiGenerationOutput> {
+    const responseInput = toOpenAiResponsesInput(messages);
+
+    if (responseInput.length === 0) {
+      throw new AiProviderHttpError(
+        this.name,
+        400,
+        "OpenAI requires at least one non-empty message.",
+        {
+          provider: this.name,
+          model: route.model,
+          taskType: input.taskType,
+          planTier: input.planTier,
+          responseFormat: route.responseFormat,
+          messageCount: messages.length,
+        },
+      );
+    }
+
+    const body: Record<string, unknown> = {
+      model: route.model,
+      input: responseInput,
+      temperature: resolveEffectiveTemperature(input, route),
+      max_output_tokens: resolveEffectiveMaxTokens(input, route),
+    };
+
+    if (route.responseFormat === "json") {
+      body.text = {
+        format: {
+          type: "json_object",
+        },
+      };
+    }
+
+    const requestSummary = {
+      provider: this.name,
+      apiStyle: "responses",
+      endpoint: `${getOpenAiBaseUrl()}/responses`,
+      model: route.model,
+      taskType: input.taskType,
+      planTier: input.planTier,
+      responseFormat: route.responseFormat,
+      messageCount: messages.length,
+      normalizedMessageCount: responseInput.length,
+      temperature: resolveEffectiveTemperature(input, route),
+      maxTokens: resolveEffectiveMaxTokens(input, route),
+      jsonMode: route.responseFormat === "json",
+      metadata: input.metadata ?? null,
+    };
+
+    const { response, payload, latencyMs } =
+      await postJson<OpenAiResponsesResponse>(
+        `${getOpenAiBaseUrl()}/responses`,
+        apiKey,
+        body,
+        requestSummary,
+      );
+
+    if (!response.ok) {
+      throw new AiProviderHttpError(
+        this.name,
+        response.status,
+        `OpenAI API error: ${extractOpenAiErrorMessage(payload, response.statusText)}`,
+        {
           request: requestSummary,
           response: payload,
         },
       );
     }
 
+    if (typeof payload !== "object" || payload === null) {
+      throw new AiProviderHttpError(
+        this.name,
+        response.status,
+        "OpenAI returned an unexpected response body.",
+        {
+          request: requestSummary,
+          response: payload,
+        },
+      );
+    }
+
+    const { text, refusal } = extractResponsesText(payload);
+
+    if (!text && refusal) {
+      throw new AiProviderHttpError(
+        this.name,
+        422,
+        `OpenAI refused to generate content: ${refusal}`,
+        {
+          request: requestSummary,
+          response: payload,
+          refusal,
+        },
+      );
+    }
+
     const content: unknown =
-      responseFormat === "json"
+      route.responseFormat === "json"
         ? normalizeJsonModeContent(text)
         : text;
 
     assertNonEmptyContent(content, this.name);
 
-    const usage = payload.usage ?? {};
-    const promptTokens = Math.max(0, Math.floor(usage.prompt_tokens ?? 0));
-    const completionTokens = Math.max(
-      0,
-      Math.floor(usage.completion_tokens ?? 0),
-    );
-    const totalTokens = Math.max(
-      0,
-      Math.floor(usage.total_tokens ?? promptTokens + completionTokens),
-    );
-
-    const resolvedModel = payload.model ?? route.model;
-
-    const costEstimate = estimateOpenAiCostUsd({
-      model: resolvedModel,
-      promptTokens,
-      completionTokens,
-    });
-
     return {
       provider: this.name,
-      model: resolvedModel,
+      model: payload.model ?? route.model,
       content,
       usage: {
-        promptTokens,
-        completionTokens,
-        totalTokens,
+        promptTokens: payload.usage?.input_tokens ?? 0,
+        completionTokens: payload.usage?.output_tokens ?? 0,
+        totalTokens: payload.usage?.total_tokens ?? 0,
       },
-      costEstimate,
       latencyMs,
-      finishReason: mapOpenAiFinishReason(choice?.finish_reason),
+      finishReason: mapResponsesFinishReason(
+        payload.status,
+        payload.incomplete_details?.reason,
+      ),
       raw: {
         request: requestSummary,
-        json_mode: responseFormat === "json",
-        estimated_cost_usd: costEstimate,
         id: payload.id,
-        created: payload.created,
+        created_at: payload.created_at,
         model: payload.model,
-        system_fingerprint: payload.system_fingerprint,
-        finish_reason: choice?.finish_reason,
+        status: payload.status,
+        incomplete_reason: payload.incomplete_details?.reason,
         response: payload,
       },
     };

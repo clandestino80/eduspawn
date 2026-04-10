@@ -25,21 +25,27 @@ type GeminiPart = {
 };
 
 type GeminiContent = {
-  role?: string;
+  role?: "user" | "model";
   parts?: GeminiPart[];
 };
 
+type GeminiCandidate = {
+  finishReason?: string;
+  content?: {
+    parts?: GeminiPart[];
+  };
+};
+
 type GeminiResponse = {
-  candidates?: Array<{
-    finishReason?: string;
-    content?: {
-      parts?: GeminiPart[];
-    };
-  }>;
+  candidates?: GeminiCandidate[];
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
     totalTokenCount?: number;
+  };
+  modelVersion?: string;
+  promptFeedback?: {
+    blockReason?: string;
   };
   error?: {
     code?: number;
@@ -47,6 +53,49 @@ type GeminiResponse = {
     status?: string;
   };
 };
+
+type CostRates = {
+  inputPerMillion: number;
+  outputPerMillion: number;
+};
+
+const DEFAULT_GEMINI_BASE_URL =
+  "https://generativelanguage.googleapis.com/v1beta";
+
+const MODEL_COSTS: Readonly<Record<string, CostRates>> = {
+  "gemini-2.5-flash": {
+    inputPerMillion: 0.3,
+    outputPerMillion: 2.5,
+  },
+  "gemini-2.5-pro": {
+    inputPerMillion: 1.25,
+    outputPerMillion: 10,
+  },
+  "gemini-1.5-flash": {
+    inputPerMillion: 0.35,
+    outputPerMillion: 1.05,
+  },
+  "gemini-1.5-pro": {
+    inputPerMillion: 1.25,
+    outputPerMillion: 5,
+  },
+};
+
+function readEnv(key: string): string | undefined {
+  const value = process.env[key]?.trim();
+  return value ? value : undefined;
+}
+
+function getGeminiBaseUrl(): string {
+  return (readEnv("GEMINI_BASE_URL") ?? DEFAULT_GEMINI_BASE_URL).replace(
+    /\/+$/,
+    "",
+  );
+}
+
+function normalizeMessageContent(content: string): string {
+  return content.replace(/\r\n/g, "\n").trim();
+}
 
 function mapGeminiFinishReason(
   raw: string | null | undefined,
@@ -80,17 +129,30 @@ function buildGeminiContents(messages: AiMessage[]): {
   const turns: AiMessage[] = [];
 
   for (const message of messages) {
+    const normalized = normalizeMessageContent(message.content);
+
+    if (!normalized) {
+      continue;
+    }
+
     if (message.role === "system") {
-      systemParts.push(message.content);
-    } else {
-      turns.push(message);
+      systemParts.push(normalized);
+      continue;
+    }
+
+    if (message.role === "user" || message.role === "assistant") {
+      turns.push({
+        ...message,
+        content: normalized,
+      });
     }
   }
 
   const contents: GeminiContent[] = [];
 
   for (const message of turns) {
-    const geminiRole = message.role === "assistant" ? "model" : "user";
+    const geminiRole: "user" | "model" =
+      message.role === "assistant" ? "model" : "user";
     const last = contents[contents.length - 1];
 
     if (last && last.role === geminiRole) {
@@ -113,9 +175,11 @@ function buildGeminiContents(messages: AiMessage[]): {
   }
 
   const result: {
-    contents: GeminiContent[];
     systemInstruction?: { parts: GeminiPart[] };
-  } = { contents };
+    contents: GeminiContent[];
+  } = {
+    contents,
+  };
 
   if (systemParts.length > 0) {
     result.systemInstruction = {
@@ -126,7 +190,26 @@ function buildGeminiContents(messages: AiMessage[]): {
   return result;
 }
 
+function resolveGeminiCostRates(model: string): CostRates | undefined {
+  const normalized = model.trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (MODEL_COSTS[normalized]) {
+    return MODEL_COSTS[normalized];
+  }
+
+  const matchedKey = Object.keys(MODEL_COSTS)
+    .sort((a, b) => b.length - a.length)
+    .find((key) => normalized.startsWith(key));
+
+  return matchedKey ? MODEL_COSTS[matchedKey] : undefined;
+}
+
 function estimateGeminiCostUsd(params: {
+  model: string;
   promptTokens: number;
   completionTokens: number;
 }): number | undefined {
@@ -137,15 +220,46 @@ function estimateGeminiCostUsd(params: {
     return 0;
   }
 
-  /**
-   * Conservative placeholder estimate.
-   * Replace with exact per-model pricing table later if needed.
-   */
+  const rates = resolveGeminiCostRates(params.model);
+
+  if (!rates) {
+    return undefined;
+  }
+
   const estimatedUsd =
-    (promptTokens / 1_000_000) * 0.35 +
-    (completionTokens / 1_000_000) * 1.05;
+    (promptTokens / 1_000_000) * rates.inputPerMillion +
+    (completionTokens / 1_000_000) * rates.outputPerMillion;
 
   return Number(estimatedUsd.toFixed(6));
+}
+
+function extractGeminiErrorMessage(
+  payload: GeminiResponse | string | null,
+  fallback: string,
+): string {
+  if (typeof payload === "string") {
+    const trimmed = payload.trim();
+    return trimmed || fallback;
+  }
+
+  if (payload?.error?.message) {
+    return payload.error.message;
+  }
+
+  if (payload?.promptFeedback?.blockReason) {
+    return `Prompt blocked: ${payload.promptFeedback.blockReason}`;
+  }
+
+  return fallback;
+}
+
+function extractGeminiText(candidate: GeminiCandidate | undefined): string {
+  const parts = candidate?.content?.parts ?? [];
+
+  return parts
+    .map((part) => (typeof part.text === "string" ? part.text : ""))
+    .join("")
+    .trim();
 }
 
 export class GeminiProvider implements AiProvider {
@@ -155,7 +269,7 @@ export class GeminiProvider implements AiProvider {
     input: AiGenerationInput,
     route: ModelRouteDecision,
   ): Promise<AiGenerationOutput> {
-    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    const apiKey = readEnv("GEMINI_API_KEY");
 
     if (!apiKey) {
       throw new AiProviderConfigurationError(
@@ -166,7 +280,10 @@ export class GeminiProvider implements AiProvider {
 
     const responseFormat = route.responseFormat;
     const effectiveTemperature = resolveEffectiveTemperature(input, route);
-    const effectiveMaxTokens = resolveEffectiveMaxTokens(input, route);
+    const effectiveMaxTokens = Math.max(
+      1,
+      resolveEffectiveMaxTokens(input, route),
+    );
 
     const sourceMessages =
       responseFormat === "json"
@@ -183,6 +300,7 @@ export class GeminiProvider implements AiProvider {
         {
           request: {
             provider: this.name,
+            endpoint: `${getGeminiBaseUrl()}/models/${route.model}:generateContent`,
             model: route.model,
             taskType: input.taskType,
             planTier: input.planTier,
@@ -213,12 +331,14 @@ export class GeminiProvider implements AiProvider {
 
     const requestSummary = {
       provider: this.name,
+      endpoint: `${getGeminiBaseUrl()}/models/${route.model}:generateContent`,
       model: route.model,
       taskType: input.taskType,
       planTier: input.planTier,
       responseFormat,
       messageCount: sourceMessages.length,
       conversationCount: contents.length,
+      hasSystemInstruction: Boolean(systemInstruction),
       temperature: effectiveTemperature,
       maxTokens: effectiveMaxTokens,
       jsonMode: responseFormat === "json",
@@ -226,7 +346,7 @@ export class GeminiProvider implements AiProvider {
     };
 
     const model = encodeURIComponent(route.model);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
+    const url = `${getGeminiBaseUrl()}/models/${model}:generateContent?key=${encodeURIComponent(
       apiKey,
     )}`;
 
@@ -283,10 +403,7 @@ export class GeminiProvider implements AiProvider {
       | null;
 
     if (!res.ok) {
-      const message =
-        typeof payload === "object" && payload !== null && "error" in payload
-          ? String(payload.error?.message ?? res.statusText)
-          : res.statusText;
+      const message = extractGeminiErrorMessage(payload, res.statusText);
 
       throw new AiProviderHttpError(
         this.name,
@@ -312,12 +429,22 @@ export class GeminiProvider implements AiProvider {
     }
 
     const candidate = payload.candidates?.[0];
-    const parts = candidate?.content?.parts ?? [];
-    const text = parts
-      .map((part) => (typeof part.text === "string" ? part.text : ""))
-      .join("");
+    const text = extractGeminiText(candidate);
 
-    if (!text.trim() && candidate?.finishReason) {
+    if (!text && payload.promptFeedback?.blockReason) {
+      throw new AiProviderHttpError(
+        this.name,
+        422,
+        `Gemini blocked the prompt: ${payload.promptFeedback.blockReason}`,
+        {
+          blockReason: payload.promptFeedback.blockReason,
+          request: requestSummary,
+          response: payload,
+        },
+      );
+    }
+
+    if (!text && candidate?.finishReason) {
       throw new AiProviderHttpError(
         this.name,
         422,
@@ -333,7 +460,7 @@ export class GeminiProvider implements AiProvider {
     const content: unknown =
       responseFormat === "json"
         ? normalizeJsonModeContent(text)
-        : text.trim();
+        : text;
 
     assertNonEmptyContent(content, this.name);
 
@@ -351,30 +478,39 @@ export class GeminiProvider implements AiProvider {
       Math.floor(usage.totalTokenCount ?? promptTokens + completionTokens),
     );
 
+    const resolvedModel = payload.modelVersion ?? route.model;
     const costEstimate = estimateGeminiCostUsd({
+      model: resolvedModel,
       promptTokens,
       completionTokens,
     });
 
-    return {
-      provider: this.name,
-      model: route.model,
-      content,
-      usage: {
-        promptTokens,
-        completionTokens,
-        totalTokens,
-      },
-      costEstimate,
-      latencyMs,
-      finishReason: mapGeminiFinishReason(candidate?.finishReason),
-      raw: {
-        request: requestSummary,
-        json_mode: responseFormat === "json",
-        estimated_cost_usd: costEstimate,
-        finishReason: candidate?.finishReason,
-        response: payload,
-      },
-    };
+    const output: AiGenerationOutput = {
+  provider: this.name,
+  model: resolvedModel,
+  content,
+  usage: {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+  },
+  latencyMs,
+  finishReason: mapGeminiFinishReason(candidate?.finishReason),
+  raw: {
+    request: requestSummary,
+    json_mode: responseFormat === "json",
+    estimated_cost_usd: costEstimate,
+    model_version: payload.modelVersion,
+    finishReason: candidate?.finishReason,
+    promptFeedback: payload.promptFeedback ?? null,
+    response: payload,
+  },
+};
+
+if (costEstimate !== undefined) {
+  output.costEstimate = costEstimate;
+}
+
+return output;
   }
 }
