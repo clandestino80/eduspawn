@@ -129,17 +129,17 @@ const MODELS = {
 const ROUTING_TABLE: Record<AiTaskType, RouteByTier> = {
   lesson_generation: {
     free: {
-      provider: "gemini",
-      model: resolveModel(
-        ["LESSON_FREE_MODEL", "GEMINI_LESSON_MODEL", "GEMINI_MODEL_FAST", "GEMINI_MODEL"],
-        MODELS.geminiFast
-      ),
-      reasoning: "Free tier lesson generation uses a fast low-cost model.",
-      maxTokens: 1400,
-      temperature: 0.7,
-      qualityLevel: "low_cost",
-      responseFormat: "json",
-    },
+  provider: "openai",
+  model: resolveModel(
+    ["LESSON_FREE_MODEL", "OPENAI_LESSON_MODEL", "OPENAI_MODEL_FAST", "OPENAI_MODEL"],
+    "gpt-4o-mini"
+  ),
+  reasoning: "Free tier lesson generation temporarily uses OpenAI for stability.",
+  maxTokens: 1400,
+  temperature: 0.7,
+  qualityLevel: "low_cost",
+  responseFormat: "json",
+},
     pro: {
       provider: "openai",
       model: resolveModel(
