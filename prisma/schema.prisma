@@ -10,12 +10,98 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  username     String   @unique
-  passwordHash String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id               String            @id @default(cuid())
+  email            String            @unique
+  username         String            @unique
+  passwordHash     String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  learningDNA      LearningDNA?
+  learningSessions LearningSession[]
+  quizAttempts     QuizAttempt[]
+  contentOutputs   ContentOutput[]
+  contentShares    ContentShare[]
+}
+
+model LearningDNA {
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+  preferredTone       String?
+  preferredDifficulty String?
+  favoriteTopics      String[] @default([])
+  attentionSpanSeconds Int?
+  visualPreference    String?
+  quizPreference      String?
+  language            String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model LearningSession {
+  id              String   @id @default(cuid())
+  userId          String
+  topic           String
+  curiosityPrompt String
+  lessonTitle     String?
+  lessonSummary   String?
+  lessonBody      String?
+  difficulty      String?
+  tone            String?
+  status          String   @default("created")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quizAttempts   QuizAttempt[]
+  contentOutputs ContentOutput[]
+}
+
+model QuizAttempt {
+  id                String   @id @default(cuid())
+  userId            String
+  learningSessionId String
+  score             Int?
+  totalQuestions    Int?
+  answersJson       Json?
+  feedback          String?
+  createdAt         DateTime @default(now())
+
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  learningSession LearningSession @relation(fields: [learningSessionId], references: [id], onDelete: Cascade)
+}
+
+model ContentOutput {
+  id                String   @id @default(cuid())
+  userId            String
+  learningSessionId String
+  outputType        String
+  title             String?
+  content           String
+  metaJson          Json?
+  createdAt         DateTime @default(now())
+
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  learningSession LearningSession @relation(fields: [learningSessionId], references: [id], onDelete: Cascade)
+  shares          ContentShare[]
+}
+
+/// Viral share tracking per user + content output + platform (aggregated shareCount).
+model ContentShare {
+  id              String   @id @default(cuid())
+  userId          String
+  contentOutputId String
+  platform        String
+  shareCount      Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contentOutput ContentOutput @relation(fields: [contentOutputId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contentOutputId, platform])
 }
 
 // Add models as features land; run migrations against RDS (or a CI mirror of the same engine).

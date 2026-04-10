@@ -6,6 +6,7 @@ import morgan from "morgan";
 import { loadEnv } from "./config/env";
 import { errorHandler } from "./middleware/errorHandler";
 import { notFoundHandler } from "./middleware/notFound";
+import { coreRouter } from "./modules/core/core.route";
 import { registerRoutes } from "./routes";
 
 export function createApp(): Express {
@@ -36,6 +37,7 @@ export function createApp(): Express {
     }),
   );
 
+  app.use("/core", coreRouter);
   registerRoutes(app);
 
   app.use(notFoundHandler);

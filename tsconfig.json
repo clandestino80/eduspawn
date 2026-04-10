@@ -2,9 +2,8 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
-    "module": "commonjs",
-    "moduleResolution": "node",
-    "ignoreDeprecations": "6.0",
+    "module": "Node16",
+    "moduleResolution": "node16",
     "target": "ES2022",
     "lib": ["ES2022"],
     "types": ["node"],
