@@ -382,11 +382,14 @@ export class OpenAiProvider implements AiProvider {
       );
     }
 
+    const effectiveTemperature = resolveEffectiveTemperature(input, route);
+    const effectiveMaxTokens = resolveEffectiveMaxTokens(input, route);
+
     const body: Record<string, unknown> = {
       model: route.model,
       messages: normalizedMessages,
-      temperature: resolveEffectiveTemperature(input, route),
-      max_tokens: resolveEffectiveMaxTokens(input, route),
+      temperature: effectiveTemperature,
+      max_tokens: effectiveMaxTokens,
     };
 
     if (route.responseFormat === "json") {
@@ -403,8 +406,8 @@ export class OpenAiProvider implements AiProvider {
       responseFormat: route.responseFormat,
       messageCount: messages.length,
       normalizedMessageCount: normalizedMessages.length,
-      temperature: resolveEffectiveTemperature(input, route),
-      maxTokens: resolveEffectiveMaxTokens(input, route),
+      temperature: effectiveTemperature,
+      maxTokens: effectiveMaxTokens,
       jsonMode: route.responseFormat === "json",
       metadata: input.metadata ?? null,
     };
@@ -511,12 +514,18 @@ export class OpenAiProvider implements AiProvider {
       );
     }
 
+    const effectiveTemperature = resolveEffectiveTemperature(input, route);
+    const effectiveMaxTokens = resolveEffectiveMaxTokens(input, route);
+
     const body: Record<string, unknown> = {
       model: route.model,
       input: responseInput,
-      temperature: resolveEffectiveTemperature(input, route),
-      max_output_tokens: resolveEffectiveMaxTokens(input, route),
+      max_output_tokens: effectiveMaxTokens,
     };
+
+    if (!route.model.trim().toLowerCase().startsWith("gpt-5")) {
+      body.temperature = effectiveTemperature;
+    }
 
     if (route.responseFormat === "json") {
       body.text = {
@@ -536,8 +545,8 @@ export class OpenAiProvider implements AiProvider {
       responseFormat: route.responseFormat,
       messageCount: messages.length,
       normalizedMessageCount: responseInput.length,
-      temperature: resolveEffectiveTemperature(input, route),
-      maxTokens: resolveEffectiveMaxTokens(input, route),
+      temperature: effectiveTemperature,
+      maxTokens: effectiveMaxTokens,
       jsonMode: route.responseFormat === "json",
       metadata: input.metadata ?? null,
     };
