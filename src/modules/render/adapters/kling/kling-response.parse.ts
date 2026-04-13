@@ -83,13 +83,18 @@ export function mapKlingPollToRenderStatus(json: unknown): RenderStatusOk {
     const obj = isRecord(json) ? json : {};
     const url = pickUrl(obj);
     const thumb = pickThumb(obj);
-    return {
+    const result: RenderStatusOk = {
       ok: true,
       status: "SUCCEEDED",
-      outputUrl: url,
-      thumbnailUrl: thumb,
       metadataJson: { klingStatus: raw, poll: true },
     };
+    if (url !== undefined) {
+      result.outputUrl = url;
+    }
+    if (thumb !== undefined) {
+      result.thumbnailUrl = thumb;
+    }
+    return result;
   }
 
   if (s === "failed" || s === "error" || s === "cancelled" || s === "canceled") {

@@ -119,12 +119,19 @@ export function parseKlingProviderCallback(raw: unknown): ParsedProviderWebhook 
   const mapped = mapStatus(statusRaw);
   if (!mapped) return null;
   const urls = readUrlFields(raw);
-  return {
+  const parsed: ParsedProviderWebhook = {
     provider: "KLING",
     providerJobId: taskId,
     status: mapped,
-    outputUrl: urls.outputUrl,
-    thumbnailUrl: urls.thumbnailUrl,
-    failureReason: mapped === "FAILED" ? readFailure(raw) ?? `Kling status: ${statusRaw}` : undefined,
   };
+  if (urls.outputUrl !== undefined) {
+    parsed.outputUrl = urls.outputUrl;
+  }
+  if (urls.thumbnailUrl !== undefined) {
+    parsed.thumbnailUrl = urls.thumbnailUrl;
+  }
+  if (mapped === "FAILED") {
+    parsed.failureReason = readFailure(raw) ?? `Kling status: ${statusRaw}`;
+  }
+  return parsed;
 }

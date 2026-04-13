@@ -1,4 +1,5 @@
-import type { CreatorPackKind, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { CreatorPackKind } from "@prisma/client";
 import { prisma } from "../../../lib/prisma";
 
 export async function createUserCreatorPackRow(args: {
@@ -22,7 +23,7 @@ export async function createUserCreatorPackRow(args: {
       systemOriginalJson: args.systemOriginalJson,
       reusedFromGlobalId: args.reusedFromGlobalId,
       linkedGlobalMemoryId: args.linkedGlobalMemoryId,
-      generationProvenanceJson: args.generationProvenanceJson ?? undefined,
+      generationProvenanceJson: args.generationProvenanceJson ?? Prisma.DbNull,
     },
     select: { id: true },
   });

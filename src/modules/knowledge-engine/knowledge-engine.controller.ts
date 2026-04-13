@@ -123,24 +123,32 @@ export async function getMemoryPreviewController(
 export async function listGlobalConceptsController(req: Request, res: Response): Promise<void> {
   getUserId(req);
   const query = parseOrThrow(() => globalConceptListQuerySchema.parse(req.query));
-  const concepts = await listGlobalConceptsForReadApi({
+  const conceptsInput: { limit: number; domain?: string; subdomain?: string } = {
     limit: query.limit,
-    domain: query.domain,
-    subdomain: query.subdomain,
-  });
+  };
+  if (query.domain !== undefined) conceptsInput.domain = query.domain;
+  if (query.subdomain !== undefined) conceptsInput.subdomain = query.subdomain;
+  const concepts = await listGlobalConceptsForReadApi(conceptsInput);
   res.status(200).json({ success: true, data: { concepts } });
 }
 
 export async function getRecommendedGlobalConceptsController(req: Request, res: Response): Promise<void> {
   const userId = getUserId(req);
   const query = parseOrThrow(() => globalConceptRecommendedQuerySchema.parse(req.query));
-  const recommendations = await listRecommendedGlobalConceptsForReadApi({
+  const recInput: {
+    userId: string;
+    limit: number;
+    mode: "user" | "featured";
+    domain?: string;
+    subdomain?: string;
+  } = {
     userId,
     limit: query.limit,
-    domain: query.domain,
-    subdomain: query.subdomain,
     mode: query.mode,
-  });
+  };
+  if (query.domain !== undefined) recInput.domain = query.domain;
+  if (query.subdomain !== undefined) recInput.subdomain = query.subdomain;
+  const recommendations = await listRecommendedGlobalConceptsForReadApi(recInput);
   res.status(200).json({
     success: true,
     data: {
@@ -154,20 +162,15 @@ export async function getRecommendedGlobalConceptsController(req: Request, res: 
 export async function getTopicFeedController(req: Request, res: Response): Promise<void> {
   const userId = getUserId(req);
   const query = parseOrThrow(() => topicFeedQuerySchema.parse(req.query));
+  const feedInput: { userId: string; limit: number; domain?: string; subdomain?: string } = {
+    userId,
+    limit: query.limit,
+  };
+  if (query.domain !== undefined) feedInput.domain = query.domain;
+  if (query.subdomain !== undefined) feedInput.subdomain = query.subdomain;
   const data = await listTopicFeedForUserWithCache(
-    {
-      userId,
-      limit: query.limit,
-      domain: query.domain,
-      subdomain: query.subdomain,
-    },
-    () =>
-      listTopicFeedForUserApi({
-        userId,
-        limit: query.limit,
-        domain: query.domain,
-        subdomain: query.subdomain,
-      }),
+    feedInput,
+    () => listTopicFeedForUserApi(feedInput),
   );
   res.status(200).json({ success: true, data });
 }

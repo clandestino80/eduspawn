@@ -112,7 +112,7 @@ export async function listSessionsController(req: Request, res: Response): Promi
   const query = parseOrThrow(() => listLearningSessionsQuerySchema.parse(req.query));
   const result = await listLearningSessionsForUser(userId, {
     limit: query.limit,
-    cursor: query.cursor,
+    ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
   });
   res.status(200).json({
     success: true,

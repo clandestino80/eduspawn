@@ -99,14 +99,12 @@ export async function listGlobalConceptsForReadApi(input: {
   domain?: string;
   subdomain?: string;
 }): Promise<GlobalConceptReadDto[]> {
+  const repositoryInput: { take: number; domain?: string; subdomain?: string } = { take: input.limit };
+  if (input.domain !== undefined) repositoryInput.domain = input.domain;
+  if (input.subdomain !== undefined) repositoryInput.subdomain = input.subdomain;
   const rows = await withReadDbRetry(
     "global_concept_read_list",
-    () =>
-      globalConceptReadRepository.findGlobalConceptsForReadList({
-        take: input.limit,
-        domain: input.domain,
-        subdomain: input.subdomain,
-      }),
+    () => globalConceptReadRepository.findGlobalConceptsForReadList(repositoryInput),
     { limit: input.limit, domain: input.domain ?? null, subdomain: input.subdomain ?? null },
   );
   return rows.map((r) => mapRow(r, { includeNodeCount: false }));

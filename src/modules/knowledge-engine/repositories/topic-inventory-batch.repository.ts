@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type { TopicInventoryBatchStatus, TopicInventoryBatchType } from "@prisma/client";
 import { prisma } from "../../../lib/prisma";
 
@@ -20,10 +20,10 @@ export async function createTopicInventoryBatchPending(
       requestedCount: params.requestedCount,
       acceptedCount: 0,
       rejectedCount: 0,
-      domainHint: params.domainHint ?? undefined,
-      subdomainHint: params.subdomainHint ?? undefined,
+      domainHint: params.domainHint ?? null,
+      subdomainHint: params.subdomainHint ?? null,
       status: params.status ?? "PENDING",
-      metadataJson: params.metadataJson ?? undefined,
+      metadataJson: params.metadataJson ?? Prisma.DbNull,
     },
     select: { id: true },
   });

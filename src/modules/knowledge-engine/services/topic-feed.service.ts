@@ -122,12 +122,11 @@ export async function listTopicFeedForUserApi(input: {
 }): Promise<TopicFeedResponseDto> {
   const limit = clampTopicFeedApiLimit(input.limit);
   const take = Math.min(MAX_CANDIDATES, Math.max(limit * CANDIDATE_MULTIPLIER, limit + 16));
+  const feedArgs: { take: number; domain?: string; subdomain?: string } = { take };
+  if (input.domain !== undefined) feedArgs.domain = input.domain;
+  if (input.subdomain !== undefined) feedArgs.subdomain = input.subdomain;
 
-  const rows = await findActiveReusableTopicsForFeed({
-    take,
-    domain: input.domain,
-    subdomain: input.subdomain,
-  });
+  const rows = await findActiveReusableTopicsForFeed(feedArgs);
   const ids = rows.map((r) => r.id);
   const states = await findUserTopicStatesForTopicIds({ userId: input.userId, topicIds: ids });
   const stateByTopic = new Map(states.map((s) => [s.globalTopicId, s]));

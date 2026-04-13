@@ -70,11 +70,10 @@ export async function findGlobalConceptsForRecommendationCandidates(params: {
   subdomain?: string;
 }): Promise<GlobalConceptRowWithArticleAndCategoryCount[]> {
   const take = Math.min(Math.max(1, params.take), RECOMMENDATION_CANDIDATE_CAP);
-  return findGlobalConceptsForReadList({
-    take,
-    domain: params.domain,
-    subdomain: params.subdomain,
-  });
+  const input: { take: number; domain?: string; subdomain?: string } = { take };
+  if (params.domain !== undefined) input.domain = params.domain;
+  if (params.subdomain !== undefined) input.subdomain = params.subdomain;
+  return findGlobalConceptsForReadList(input);
 }
 
 /**

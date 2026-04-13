@@ -274,15 +274,13 @@ export async function listRecommendedGlobalConceptsForReadApi(input: {
   mode: "user" | "featured";
 }): Promise<GlobalConceptRecommendationItemDto[]> {
   const limit = Math.min(Math.max(1, input.limit), 30);
+  const candidateInput: { take: number; domain?: string; subdomain?: string } = { take: CANDIDATE_POOL_SIZE };
+  if (input.domain !== undefined) candidateInput.domain = input.domain;
+  if (input.subdomain !== undefined) candidateInput.subdomain = input.subdomain;
 
   const rows = await withReadDbRetry(
     "global_concept_recommendation_pool",
-    () =>
-      globalConceptReadRepository.findGlobalConceptsForRecommendationCandidates({
-        take: CANDIDATE_POOL_SIZE,
-        domain: input.domain,
-        subdomain: input.subdomain,
-      }),
+    () => globalConceptReadRepository.findGlobalConceptsForRecommendationCandidates(candidateInput),
     {
       pool: CANDIDATE_POOL_SIZE,
       domain: input.domain ?? null,
@@ -345,9 +343,10 @@ export async function listRecommendedGlobalConceptsForReadApi(input: {
     .map((row) => {
       const linked = linkedConceptIds.has(row.id);
       const favorite = favoriteTopicHit(row, favoriteTopics);
-      const dom = row.domain?.trim();
-      const theme = Boolean(dom) && themeDomains.has(dom);
-      const themeFromCategories = Boolean(dom) && categoryDomains.has(dom);
+      const dom = row.domain?.trim() ?? "";
+      const hasDom = dom.length > 0;
+      const theme = hasDom && themeDomains.has(dom);
+      const themeFromCategories = hasDom && categoryDomains.has(dom);
       let internal = baseCatalogScore(row);
       if (linked) internal += 520;
       if (favorite) internal += 200;

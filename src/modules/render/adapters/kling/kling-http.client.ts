@@ -43,11 +43,14 @@ export async function klingHttpJson(
 
   let res: Response;
   try {
-    res = await fetchFn(url, {
+    const requestInit: RequestInit = {
       method: args.method,
       headers,
-      body: bodyStr,
-    });
+    };
+    if (bodyStr !== undefined) {
+      requestInit.body = bodyStr;
+    }
+    res = await fetchFn(url, requestInit);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Network error calling Kling API";
     return { ok: false, status: 0, message: msg, errorCode: "KLING_NETWORK_ERROR" };

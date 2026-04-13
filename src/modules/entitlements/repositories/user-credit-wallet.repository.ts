@@ -1,7 +1,12 @@
-import type { CreditLedgerEntryType, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { CreditLedgerEntryType } from "@prisma/client";
 import { prisma } from "../../../lib/prisma";
 
 type Tx = Prisma.TransactionClient;
+
+function toNullableJsonInput(value: Prisma.InputJsonValue | null): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput {
+  return value === null ? Prisma.DbNull : value;
+}
 
 export async function findUserCreditWalletRow(userId: string): Promise<{
   id: string;
@@ -89,7 +94,7 @@ export async function decrementRenderCreditsInTx(
       entryType: "CONSUMPTION",
       reason: params.reason ?? null,
       source: params.source ?? "render",
-      metadataJson: params.metadataJson === undefined ? undefined : params.metadataJson,
+      ...(params.metadataJson !== undefined ? { metadataJson: toNullableJsonInput(params.metadataJson) } : {}),
     },
     select: { id: true },
   });
@@ -148,7 +153,7 @@ export async function incrementRenderCreditsInTx(
       entryType: params.entryType ?? "GRANT",
       reason: params.reason ?? null,
       source: params.source ?? null,
-      metadataJson: params.metadataJson === undefined ? undefined : params.metadataJson,
+      ...(params.metadataJson !== undefined ? { metadataJson: toNullableJsonInput(params.metadataJson) } : {}),
     },
     select: { id: true },
   });

@@ -220,6 +220,9 @@ export async function tryBridgeKnowledgeCategoryToGlobalConceptV1(input: {
       fields,
       dryRun: false,
     });
+    if (result.dryRun) {
+      return;
+    }
 
     console.info("[global_wiki_bridge_linked]", {
       ...baseLog,

@@ -68,7 +68,7 @@ export async function runGlobalConceptArticleAiEnrichmentBackfillV1(input?: {
     const take = Math.min(batchSize, limit - summary.scanned);
     if (take <= 0) break;
 
-    const batch = await prisma.globalConceptArticle.findMany({
+    const batch: Array<{ id: string; globalConceptId: string }> = await prisma.globalConceptArticle.findMany({
       where: {
         sourceType: "deterministic_seed_v1",
         ...(afterId ? { id: { gt: afterId } } : {}),

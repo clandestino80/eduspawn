@@ -10,14 +10,15 @@ export function parseNormalizedRenderWebhook(raw: unknown, headers: WebhookHeade
   const envelope = renderProviderWebhookBodySchema.safeParse(raw);
   if (envelope.success) {
     const d = envelope.data;
-    return {
+    const parsed: ParsedProviderWebhook = {
       provider: d.provider,
       providerJobId: d.providerJobId,
       status: d.status,
-      outputUrl: d.outputUrl,
-      thumbnailUrl: d.thumbnailUrl,
-      failureReason: d.failureReason,
     };
+    if (d.outputUrl !== undefined) parsed.outputUrl = d.outputUrl;
+    if (d.thumbnailUrl !== undefined) parsed.thumbnailUrl = d.thumbnailUrl;
+    if (d.failureReason !== undefined) parsed.failureReason = d.failureReason;
+    return parsed;
   }
 
   const kling = createKlingRenderAdapter().parseProviderWebhook?.(raw, headers);

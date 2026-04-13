@@ -77,12 +77,22 @@ export async function grantRenderCredits(
   },
 ): Promise<void> {
   await getOrCreateUserCreditWallet(userId);
-  await incrementRenderCredits({
+  const payload: {
+    userId: string;
+    amount: number;
+    entryType: "GRANT" | "PURCHASE" | "ADJUSTMENT";
+    reason: string;
+    source: string;
+    metadataJson?: Prisma.InputJsonValue | null;
+  } = {
     userId,
     amount,
     entryType: meta?.entryType ?? "GRANT",
     reason: meta?.reason ?? "grant",
     source: meta?.source ?? "credit_wallet_service",
-    metadataJson: meta?.metadataJson === undefined ? undefined : meta.metadataJson,
-  });
+  };
+  if (meta?.metadataJson !== undefined) {
+    payload.metadataJson = meta.metadataJson;
+  }
+  await incrementRenderCredits(payload);
 }

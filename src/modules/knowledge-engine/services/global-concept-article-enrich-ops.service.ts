@@ -339,15 +339,6 @@ export async function runSingleConceptArticleEnrichmentBySlugForOpsV1(input: {
     };
   }
 
-  const messageByEnrich: Record<string, string> = {
-    skipped_disabled: "Enrichment was skipped (flags).",
-    skipped_not_eligible: "Enrichment not eligible (e.g. article not deterministic seed or missing row).",
-    skipped_validation: "Enrichment failed validation; article unchanged.",
-    skipped_noop: "Enrichment produced no effective change; article unchanged.",
-    skipped_race: "Enrichment did not apply (race or row no longer deterministic).",
-    failed: "Enrichment failed with an error; see server logs.",
-  };
-
   const outcome =
     enrich === "skipped_disabled"
       ? "skipped_disabled"
@@ -360,6 +351,17 @@ export async function runSingleConceptArticleEnrichmentBySlugForOpsV1(input: {
             : enrich === "skipped_race"
               ? "skipped_race"
               : "failed";
+  const messageByOutcome: Record<
+    "skipped_disabled" | "skipped_not_eligible" | "skipped_validation" | "skipped_noop" | "skipped_race" | "failed",
+    string
+  > = {
+    skipped_disabled: "Enrichment was skipped (flags).",
+    skipped_not_eligible: "Enrichment not eligible (e.g. article not deterministic seed or missing row).",
+    skipped_validation: "Enrichment failed validation; article unchanged.",
+    skipped_noop: "Enrichment produced no effective change; article unchanged.",
+    skipped_race: "Enrichment did not apply (race or row no longer deterministic).",
+    failed: "Enrichment failed with an error; see server logs.",
+  };
 
   console.info("[ke_ops]", { event: "enrich_complete", ...baseLog, outcome });
 
@@ -372,6 +374,6 @@ export async function runSingleConceptArticleEnrichmentBySlugForOpsV1(input: {
     seededArticleThisRequest,
     enrichmentAttempted,
     outcome,
-    message: messageByEnrich[enrich] ?? messageByEnrich.failed,
+    message: messageByOutcome[outcome],
   };
 }

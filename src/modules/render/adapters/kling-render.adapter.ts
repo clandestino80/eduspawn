@@ -74,13 +74,24 @@ export function createKlingRenderAdapter(deps?: KlingHttpDeps): RenderProviderAd
         };
       }
 
-      const body = buildText2VideoBody({
+      const bodyArgs: {
+        prompt: string;
+        durationSec: number;
+        aspectRatio: string;
+        mode?: string;
+        negativePrompt?: string;
+      } = {
         prompt,
         durationSec: input.narrative.targetDurationSec,
         aspectRatio: env.RENDER_KLING_DEFAULT_ASPECT_RATIO,
-        mode: env.RENDER_KLING_DEFAULT_MODE,
-        negativePrompt: env.RENDER_KLING_NEGATIVE_PROMPT,
-      });
+      };
+      if (env.RENDER_KLING_DEFAULT_MODE !== undefined) {
+        bodyArgs.mode = env.RENDER_KLING_DEFAULT_MODE;
+      }
+      if (env.RENDER_KLING_NEGATIVE_PROMPT !== undefined) {
+        bodyArgs.negativePrompt = env.RENDER_KLING_NEGATIVE_PROMPT;
+      }
+      const body = buildText2VideoBody(bodyArgs);
 
       const res = await klingHttpJson(deps, {
         method: "POST",

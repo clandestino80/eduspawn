@@ -32,6 +32,10 @@ const coreRouter = Router();
  * 7) Track shares for generated content
  */
 coreRouter.use(requireAuth);
+const longformGenerateRateLimit = rateLimitPerAuthenticatedUser("core_longform_generate", () => ({
+  windowMs: getEnv().RATE_LIMIT_CORE_LONGFORM_WINDOW_MS,
+  max: getEnv().RATE_LIMIT_CORE_LONGFORM_MAX,
+}));
 
 /**
  * Learning DNA

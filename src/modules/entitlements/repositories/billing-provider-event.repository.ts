@@ -164,8 +164,7 @@ export async function listRecentBillingProviderEvents(params: {
     processedAt: Date | null;
   }[]
 > {
-  return prisma.billingProviderEvent.findMany({
-    where: params.provider ? { provider: params.provider } : undefined,
+  const query: Prisma.BillingProviderEventFindManyArgs = {
     orderBy: { createdAt: "desc" },
     take: params.limit,
     select: {
@@ -179,5 +178,9 @@ export async function listRecentBillingProviderEvents(params: {
       createdAt: true,
       processedAt: true,
     },
-  });
+  };
+  if (params.provider) {
+    query.where = { provider: params.provider };
+  }
+  return prisma.billingProviderEvent.findMany(query);
 }

@@ -34,6 +34,15 @@ function cloneJson<T>(v: unknown): T {
   return JSON.parse(JSON.stringify(v)) as T;
 }
 
+function toPrismaInputJson(
+  value: Record<string, unknown> | undefined,
+): Prisma.InputJsonValue | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return cloneJson<Prisma.InputJsonValue>(value);
+}
+
 function readDurationFromPackRequest(requestJson: unknown, override?: number): number {
   if (typeof override === "number" && Number.isFinite(override) && override > 0) {
     return Math.floor(override);
@@ -69,14 +78,17 @@ function buildNarrativePayload(args: {
     : "SYSTEM_ORIGINAL";
   const base = args.useEditedPack && args.userEditedJson != null ? args.userEditedJson : args.systemOriginalJson;
   const script = cloneJson<Record<string, unknown>>(base);
-  return {
+  const payload: InternalRenderNarrativePayload = {
     packKind: args.packKind,
     script,
     targetDurationSec: args.targetDurationSec,
     targetPlatform: args.targetPlatform,
-    renderPreset: args.renderPreset,
     sourceIntent,
   };
+  if (args.renderPreset !== undefined) {
+    payload.renderPreset = args.renderPreset;
+  }
+  return payload;
 }
 
 export type PublicRenderJobDto = {
@@ -177,15 +189,26 @@ export async function startRenderJobForUser(
   const provider = resolveProvider(body);
   const sourcePackIntent = body.useEditedPack ? "USER_EDITED_PRIVATE" : "SYSTEM_ORIGINAL";
 
-  const narrative = buildNarrativePayload({
+  const narrativeInput: {
+    packKind: CreatorPackKind;
+    systemOriginalJson: unknown;
+    userEditedJson: unknown | null;
+    useEditedPack: boolean;
+    targetDurationSec: number;
+    targetPlatform: string;
+    renderPreset?: string;
+  } = {
     packKind: pack.packKind,
     systemOriginalJson: pack.systemOriginalJson,
     userEditedJson: pack.userEditedJson,
     useEditedPack: body.useEditedPack,
     targetDurationSec,
     targetPlatform,
-    renderPreset: body.renderPreset,
-  });
+  };
+  if (body.renderPreset !== undefined) {
+    narrativeInput.renderPreset = body.renderPreset;
+  }
+  const narrative = buildNarrativePayload(narrativeInput);
 
   let jobRow: RenderJobRow;
   try {
@@ -316,25 +339,30 @@ export async function refreshRenderJobStatusForUser(userId: string, jobId: strin
   }
 
   if (st.status === "PROCESSING") {
+    const processingMetadata = toPrismaInputJson(st.metadataJson);
     await applyRenderJobStatusFromProvider({
       jobId: row.id,
       nextStatus: "PROCESSING",
-      metadataJson: st.metadataJson ?? undefined,
+      ...(processingMetadata !== undefined ? { metadataJson: processingMetadata } : {}),
     });
   } else if (st.status === "SUCCEEDED") {
+    const successMetadata = toPrismaInputJson(st.metadataJson);
     const n = await applyRenderJobSucceededFinal({
       jobId: row.id,
       outputUrl: st.outputUrl ?? null,
       thumbnailUrl: st.thumbnailUrl ?? null,
-      metadataJson: st.metadataJson ?? undefined,
+      ...(successMetadata !== undefined ? { metadataJson: successMetadata } : {}),
     });
     if (n === 0 && st.outputUrl) {
+      const succeededData: Prisma.RenderJobUpdateManyMutationInput = {
+        outputUrl: st.outputUrl,
+      };
+      if (st.thumbnailUrl !== undefined) {
+        succeededData.thumbnailUrl = st.thumbnailUrl ?? null;
+      }
       await prisma.renderJob.updateMany({
         where: { id: row.id, status: "SUCCEEDED" },
-        data: {
-          outputUrl: st.outputUrl,
-          thumbnailUrl: st.thumbnailUrl ?? undefined,
-        },
+        data: succeededData,
       });
     }
   } else if (st.status === "FAILED") {

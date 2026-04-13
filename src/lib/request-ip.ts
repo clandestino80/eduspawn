@@ -8,7 +8,7 @@ export function getInboundRequestIp(req: Request): string {
   const hops = getEnv().TRUST_PROXY_HOPS;
   if (hops > 0) {
     const xff = req.headers["x-forwarded-for"];
-    const raw = typeof xff === "string" ? xff : Array.isArray(xff) ? xff[0] : "";
+    const raw = typeof xff === "string" ? xff : Array.isArray(xff) ? (xff[0] ?? "") : "";
     const first = raw.split(",")[0]?.trim();
     if (first) {
       return first.slice(0, 128);

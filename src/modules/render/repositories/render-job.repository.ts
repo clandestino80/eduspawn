@@ -1,9 +1,14 @@
-import type { Prisma, RenderJobStatus, RenderPackSourceIntent, RenderProviderKind } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { RenderJobStatus, RenderPackSourceIntent, RenderProviderKind } from "@prisma/client";
 import { prisma } from "../../../lib/prisma";
 import { AppError } from "../../../lib/errors";
 import { decrementRenderCreditsInTx, incrementRenderCreditsInTx } from "../../entitlements/repositories/user-credit-wallet.repository";
 
 type Tx = Prisma.TransactionClient;
+
+function toNullableJsonInput(value: Prisma.InputJsonValue | null): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput {
+  return value === null ? Prisma.DbNull : value;
+}
 
 export type RenderJobRow = {
   id: string;
@@ -113,22 +118,25 @@ export async function createRenderJobAndDebitCredits(args: {
   };
 }): Promise<{ job: RenderJobRow; ledgerEntryId: string }> {
   const { tx, data, debit } = args;
+  const createData: Prisma.RenderJobUncheckedCreateInput = {
+    userId: data.userId,
+    creatorPackId: data.creatorPackId,
+    learningSessionId: data.learningSessionId,
+    provider: data.provider,
+    status: "QUEUED",
+    renderKind: data.renderKind,
+    targetDurationSec: data.targetDurationSec,
+    targetPlatform: data.targetPlatform,
+    requestedWithEditedPack: data.requestedWithEditedPack,
+    sourcePackIntent: data.sourcePackIntent,
+    creditCost: data.creditCost,
+    idempotencyKey: data.idempotencyKey,
+  };
+  if (data.metadataJson !== undefined) {
+    createData.metadataJson = toNullableJsonInput(data.metadataJson);
+  }
   const job = await tx.renderJob.create({
-    data: {
-      userId: data.userId,
-      creatorPackId: data.creatorPackId,
-      learningSessionId: data.learningSessionId,
-      provider: data.provider,
-      status: "QUEUED",
-      renderKind: data.renderKind,
-      targetDurationSec: data.targetDurationSec,
-      targetPlatform: data.targetPlatform,
-      requestedWithEditedPack: data.requestedWithEditedPack,
-      sourcePackIntent: data.sourcePackIntent,
-      creditCost: data.creditCost,
-      idempotencyKey: data.idempotencyKey,
-      metadataJson: data.metadataJson ?? undefined,
-    },
+    data: createData,
     select: publicSelect,
   });
 
@@ -170,7 +178,7 @@ export async function markRenderJobSubmitted(args: {
     providerJobId: args.providerJobId,
   };
   if (args.metadataJson !== undefined) {
-    data.metadataJson = args.metadataJson;
+    data.metadataJson = toNullableJsonInput(args.metadataJson);
   }
   await prisma.renderJob.update({
     where: { id: args.jobId },
@@ -192,7 +200,7 @@ export async function applyRenderJobStatusFromProvider(args: {
   if (args.outputUrl !== undefined) data.outputUrl = args.outputUrl;
   if (args.thumbnailUrl !== undefined) data.thumbnailUrl = args.thumbnailUrl;
   if (args.failureReason !== undefined) data.failureReason = args.failureReason;
-  if (args.metadataJson !== undefined) data.metadataJson = args.metadataJson;
+  if (args.metadataJson !== undefined) data.metadataJson = toNullableJsonInput(args.metadataJson);
 
   return (
     await prisma.renderJob.updateMany({
@@ -217,7 +225,7 @@ export async function applyRenderJobSucceededFinal(args: {
     thumbnailUrl: args.thumbnailUrl,
   };
   if (args.metadataJson !== undefined) {
-    data.metadataJson = args.metadataJson;
+    data.metadataJson = toNullableJsonInput(args.metadataJson);
   }
   return (
     await prisma.renderJob.updateMany({

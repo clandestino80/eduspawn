@@ -69,7 +69,15 @@ export async function runGlobalConceptArticleSeedBackfillV1(input?: {
     const take = Math.min(batchSize, limit - summary.scanned);
     if (take <= 0) break;
 
-    const batch = await prisma.globalConcept.findMany({
+    const batch: Array<{
+      id: string;
+      slug: string;
+      displayTitle: string;
+      domain: string | null;
+      subdomain: string | null;
+      microTopic: string | null;
+      mappingKey: string | null;
+    }> = await prisma.globalConcept.findMany({
       where: {
         article: { is: null },
         ...(afterId ? { id: { gt: afterId } } : {}),

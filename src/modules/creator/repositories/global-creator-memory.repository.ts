@@ -1,4 +1,5 @@
-import type { CreatorGlobalMemoryPromotionStatus, CreatorPackKind, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { CreatorGlobalMemoryPromotionStatus, CreatorPackKind } from "@prisma/client";
 import { prisma } from "../../../lib/prisma";
 
 export async function findActiveGlobalCreatorMemoryByLookupKey(args: {
@@ -46,7 +47,7 @@ export async function createGlobalCreatorMemoryRow(args: {
       schemaVersion: args.schemaVersion ?? 1,
       promotionStatus: "ACTIVE",
       sourceUserId: args.sourceUserId,
-      provenanceJson: args.provenanceJson ?? undefined,
+      provenanceJson: args.provenanceJson ?? Prisma.DbNull,
     },
     select: { id: true },
   });
