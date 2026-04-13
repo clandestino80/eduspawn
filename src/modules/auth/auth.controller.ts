@@ -2,8 +2,8 @@ import type { Request, Response } from "express";
 import { ZodError } from "zod";
 import { AppError } from "../../lib/errors";
 import type { AuthenticatedRequest } from "../../middleware/auth.middleware";
-import { loginBodySchema, registerBodySchema } from "./auth.schema";
-import { getCurrentUser, loginUser, registerUser } from "./auth.service";
+import { googleAuthBodySchema, loginBodySchema, registerBodySchema } from "./auth.schema";
+import { authenticateWithGoogle, getCurrentUser, loginUser, registerUser } from "./auth.service";
 
 function zodToAppError(error: ZodError): AppError {
   return new AppError(400, "Request validation failed", {
@@ -38,6 +38,22 @@ export async function loginController(req: Request, res: Response): Promise<void
   }
 
   const data = await loginUser(body);
+  res.status(200).json({
+    success: true,
+    data,
+  });
+}
+
+export async function googleAuthController(req: Request, res: Response): Promise<void> {
+  let body;
+  try {
+    body = googleAuthBodySchema.parse(req.body);
+  } catch (error) {
+    if (error instanceof ZodError) throw zodToAppError(error);
+    throw error;
+  }
+
+  const data = await authenticateWithGoogle(body);
   res.status(200).json({
     success: true,
     data,

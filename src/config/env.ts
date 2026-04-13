@@ -23,6 +23,13 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().optional(),
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
   JWT_EXPIRES_IN: z.string().optional(),
+  GOOGLE_CLIENT_ID: z
+    .string()
+    .optional()
+    .transform((s) => {
+      const t = s?.trim();
+      return t && t.length > 0 ? t : undefined;
+    }),
   /**
    * Prisma reads `DATABASE_URL` for the connection pool. For AWS RDS, tune pool behavior via
    * URL query params when needed, e.g. `connection_limit`, `pool_timeout`, `connect_timeout`
