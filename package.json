@@ -13,7 +13,16 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:studio": "prisma studio",
     "postinstall": "prisma generate",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test:knowledge-engine-enrich-ops": "tsx --test \"src/modules/knowledge-engine/knowledge-engine-concept-enrich-ops.route.test.ts\"",
+    "test:knowledge-engine-topic-feed": "tsx --test \"src/modules/knowledge-engine/knowledge-engine-topic-feed.route.test.ts\"",
+    "knowledge:backfill-global-concepts": "tsx scripts/global-wiki-bridge-backfill-categories.ts",
+    "knowledge:backfill-global-concept-articles": "tsx scripts/global-concept-article-backfill.ts",
+    "knowledge:topic-inventory-bootstrap": "tsx scripts/global-topic-inventory-bootstrap.ts",
+    "knowledge:topic-inventory-replenish": "tsx scripts/global-topic-inventory-replenish.ts",
+    "knowledge:topic-inventory-promote-session": "tsx scripts/global-topic-inventory-promote-session.ts"
   },
   "engines": {
     "node": ">=20"
@@ -30,6 +39,7 @@
     "morgan": "^1.10.1",
     "pg": "^8.20.0",
     "prisma": "^6.19.3",
+    "stripe": "^17.4.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

@@ -4,6 +4,14 @@ export const coreSessionIdParamSchema = z.object({
   id: z.string().min(1),
 });
 
+/** GET /core/sessions — read-only list for the authenticated user. */
+export const listLearningSessionsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+  cursor: z.string().trim().min(1).max(512).optional(),
+});
+
+export type ListLearningSessionsQuery = z.infer<typeof listLearningSessionsQuerySchema>;
+
 export const upsertLearningDnaSchema = z.object({
   preferredTone: z.string().trim().min(1).max(60).optional(),
   preferredDifficulty: z.string().trim().min(1).max(40).optional(),
@@ -19,6 +27,12 @@ export const createLearningSessionSchema = z.object({
   curiosityPrompt: z.string().trim().min(5).max(2000),
   difficulty: z.string().trim().min(1).max(40).optional(),
   tone: z.string().trim().min(1).max(60).optional(),
+  /** Slice G — optional `GlobalTopicInventory.id` when starting from the memory-first topic feed. */
+  sourceGlobalTopicId: z
+    .preprocess(
+      (v) => (v === "" || v === null || v === undefined ? undefined : v),
+      z.string().trim().min(12).max(128).optional(),
+    ),
 });
 
 export const createQuizAttemptSchema = z.object({

@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { getEnv } from "../../config/env";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { asyncHandler } from "../../middleware/asyncHandler";
+import { rateLimitPerAuthenticatedUser } from "../../middleware/rate-limit.middleware";
 import {
   createContentOutputController,
   createLongformOutputController,
@@ -11,6 +13,7 @@ import {
   getLongformOutputController,
   getSessionOutputsController,
   getSessionController,
+  listSessionsController,
   recordContentShareController,
   upsertDnaController,
 } from "./core.controller";
@@ -37,8 +40,9 @@ coreRouter.get("/dna", asyncHandler(getDnaController));
 coreRouter.post("/dna", asyncHandler(upsertDnaController));
 
 /**
- * Learning sessions
+ * Learning sessions (list route must be registered before `/sessions/:id`).
  */
+coreRouter.get("/sessions", asyncHandler(listSessionsController));
 coreRouter.post("/sessions", asyncHandler(createSessionController));
 coreRouter.get("/sessions/:id", asyncHandler(getSessionController));
 
@@ -75,6 +79,7 @@ coreRouter.get(
  */
 coreRouter.post(
   "/sessions/:id/longform",
+  longformGenerateRateLimit,
   asyncHandler(createLongformOutputController),
 );
 coreRouter.get(

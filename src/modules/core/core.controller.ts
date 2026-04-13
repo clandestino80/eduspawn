@@ -8,9 +8,11 @@ import {
   createLongformSchema,
   createLearningSessionSchema,
   createQuizAttemptSchema,
+  listLearningSessionsQuerySchema,
   recordContentShareSchema,
   upsertLearningDnaSchema,
 } from "./core.schema";
+import { listLearningSessionsForUser } from "./core-session-list.service";
 import {
   createContentOutputForSession,
   createLearningSession,
@@ -104,6 +106,19 @@ export async function getDnaController(
 /**
  * Learning Sessions
  */
+
+export async function listSessionsController(req: Request, res: Response): Promise<void> {
+  const userId = getUserId(req);
+  const query = parseOrThrow(() => listLearningSessionsQuerySchema.parse(req.query));
+  const result = await listLearningSessionsForUser(userId, {
+    limit: query.limit,
+    cursor: query.cursor,
+  });
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+}
 
 export async function createSessionController(
   req: Request,

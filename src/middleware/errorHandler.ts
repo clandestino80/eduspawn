@@ -1,5 +1,9 @@
 import type { NextFunction, Request, Response } from "express";
 import { AppError } from "../lib/errors";
+import {
+  getPrismaErrorLogFields,
+  isTransientPrismaConnectionError,
+} from "../lib/prisma-transient";
 
 function safeMessage(err: unknown, isProduction: boolean): string {
   if (err instanceof AppError) return err.message;
@@ -25,6 +29,23 @@ export function errorHandler(
         code: err.code,
         message: err.message,
         ...(err.details !== undefined ? { details: err.details } : {}),
+      },
+    });
+    return;
+  }
+
+  if (isTransientPrismaConnectionError(err)) {
+    console.error("[db_transient_unhandled]", {
+      method: req.method,
+      path: req.originalUrl,
+      ...getPrismaErrorLogFields(err),
+    });
+    res.status(503).json({
+      success: false,
+      error: {
+        code: "DATABASE_UNAVAILABLE",
+        message:
+          "The database is temporarily unavailable. Please retry in a moment.",
       },
     });
     return;

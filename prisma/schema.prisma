@@ -9,33 +9,159 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id               String            @id @default(cuid())
-  email            String            @unique
-  username         String            @unique
-  passwordHash     String?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+/// Authoritative product tier for metering (maps to AI `PlanTier`: free / pro / premium).
+enum BillingPlanTier {
+  FREE
+  PRO
+  PREMIUM
+}
 
-  learningDNA      LearningDNA?
-  learningSessions LearningSession[]
-  quizAttempts     QuizAttempt[]
-  contentOutputs   ContentOutput[]
-  contentShares    ContentShare[]
+/// Subscription-style lifecycle; NONE = manually assigned tier without a billing cycle.
+enum BillingSubscriptionStatus {
+  NONE
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  TRIALING
+}
+
+enum EntitlementSource {
+  DEFAULT
+  MANUAL
+  WEB_STRIPE
+  APPLE_IAP
+  GOOGLE_PLAY
+  PROMO
+}
+
+enum CreditLedgerEntryType {
+  GRANT
+  PURCHASE
+  ADJUSTMENT
+  CONSUMPTION
+}
+
+enum BillingProvider {
+  STRIPE
+  APPLE
+  GOOGLE
+  MANUAL
+}
+
+enum BillingProviderEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  username     String   @unique
+  passwordHash String?
+  /// Set when Stripe Customer is linked (Checkout/subscription metadata or first webhook).
+  stripeCustomerId String? @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  learningDNA         LearningDNA?
+  learningSessions    LearningSession[]
+  quizAttempts        QuizAttempt[]
+  contentOutputs      ContentOutput[]
+  contentShares       ContentShare[]
+  knowledgeCategories KnowledgeCategory[]
+  knowledgeNodes      KnowledgeNode[]
+  knowledgeEdges      KnowledgeEdge[]
+
+  /// Slice A — global topic inventory rows promoted or authored by this user (nullable on row).
+  sourcedGlobalTopics GlobalTopicInventory[] @relation("GlobalTopicInventorySourceUser")
+  userTopicStates     UserTopicState[]
+  generationUsageDaily UserGenerationUsageDaily[]
+  creatorUsageMonthly UserCreatorUsageMonthly[]
+  creditWallet        UserCreditWallet?
+  billingEntitlement  UserBillingEntitlement?
+  creditLedgerEntries UserCreditLedgerEntry[]
+  billingProviderEvents BillingProviderEvent[]
+  userCreatorPacks      UserCreatorPack[]
+  sourcedGlobalCreatorMemories GlobalCreatorMemory[] @relation("GlobalCreatorMemorySourceUser")
+  renderJobs            RenderJob[]
+}
+
+/// Ingested payment-provider webhook (idempotent via @@unique([provider, providerEventId])).
+model BillingProviderEvent {
+  id                     String                    @id @default(cuid())
+  provider               BillingProvider
+  providerEventId        String
+  eventType              String                    @db.VarChar(128)
+  normalizedEventType    String                    @db.VarChar(64)
+  userId                 String?
+  externalCustomerId     String?                   @db.VarChar(255)
+  externalSubscriptionId String?                   @db.VarChar(255)
+  externalProductId      String?                   @db.VarChar(255)
+  payloadJson            Json
+  processingStatus       BillingProviderEventStatus  @default(RECEIVED)
+  processedAt            DateTime?
+  errorMessage           String?                   @db.Text
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, providerEventId])
+  @@index([provider, createdAt])
+  @@index([userId])
+}
+
+/// Durable plan / subscription snapshot for entitlement resolution (source of truth vs env defaults).
+model UserBillingEntitlement {
+  id                   String                    @id @default(cuid())
+  userId               String                    @unique
+  planTier             BillingPlanTier           @default(FREE)
+  subscriptionStatus   BillingSubscriptionStatus @default(NONE)
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  entitlementSource    EntitlementSource         @default(DEFAULT)
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Append-only audit trail for render credit balance changes (balance remains on UserCreditWallet).
+model UserCreditLedgerEntry {
+  id           String               @id @default(cuid())
+  userId       String
+  amount       Int
+  balanceAfter Int?
+  entryType    CreditLedgerEntryType
+  reason       String?              @db.VarChar(256)
+  source       String?              @db.VarChar(64)
+  metadataJson Json?
+  createdAt    DateTime             @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model LearningDNA {
-  id                  String   @id @default(cuid())
-  userId              String   @unique
-  preferredTone       String?
-  preferredDifficulty String?
-  favoriteTopics      String[] @default([])
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  preferredTone        String?
+  preferredDifficulty  String?
+  favoriteTopics       String[] @default([])
   attentionSpanSeconds Int?
-  visualPreference    String?
-  quizPreference      String?
-  language            String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  visualPreference     String?
+  quizPreference       String?
+  language             String?
+  /// Slice E: incremental behavioral signals (versioned JSON). Client-facing DNA fields stay unchanged.
+  signalsJson          Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -51,12 +177,23 @@ model LearningSession {
   difficulty      String?
   tone            String?
   status          String   @default("created")
+  /// Slice G — when the user started this session from a global memory-first feed card (optional).
+  sourceGlobalTopicId String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  quizAttempts   QuizAttempt[]
-  contentOutputs ContentOutput[]
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quizAttempts        QuizAttempt[]
+  contentOutputs      ContentOutput[]
+  knowledgeCategories KnowledgeCategory[]
+  /// Slice A — optional provenance when a reusable global topic was sourced from this session.
+  sourcedGlobalTopics GlobalTopicInventory[] @relation("GlobalTopicInventorySourceSession")
+  /// Slice G — inventory topic this session was created from (distinct from promotion `sourceLearningSessionId` on inventory).
+  sourceGlobalTopic   GlobalTopicInventory? @relation("LearningSessionSourceGlobalTopic", fields: [sourceGlobalTopicId], references: [id], onDelete: SetNull)
+  userCreatorPacks    UserCreatorPack[]
+  renderJobs          RenderJob[]
+
+  @@index([sourceGlobalTopicId])
 }
 
 model QuizAttempt {
@@ -102,6 +239,454 @@ model ContentShare {
   contentOutput ContentOutput @relation(fields: [contentOutputId], references: [id], onDelete: Cascade)
 
   @@unique([userId, contentOutputId, platform])
+}
+
+// --- Knowledge Engine (Personal Brain) V1: categories + nodes; user-scoped only. ---
+// --- Slice J: reusable global concept row (cross-user); Personal Brain stays authoritative. ---
+
+enum KnowledgeSourceType {
+  LEARNING_SESSION
+  LESSON_ATOMIC
+}
+
+enum KnowledgeNodeKind {
+  SESSION_LESSON
+  ATOMIC_CONCEPT
+}
+
+/// V1 personal graph edges between KnowledgeNodes (user-scoped only).
+enum KnowledgeRelationType {
+  RELATED_TO
+  BELONGS_TO_CATEGORY
+  REINFORCES
+  PREREQUISITE_OF
+  EXAMPLE_OF
+}
+
+/// User-scoped category bucket derived from stable topic + curiosity normalization (see persist service).
+/// Idempotency: @@unique([userId, normalizedKey]).
+model KnowledgeCategory {
+  id              String   @id @default(cuid())
+  userId          String
+  normalizedKey   String
+  label           String
+  sourceSessionId String?
+  weight          Float?
+  confidence      Float?
+  /// Slice H — reusable taxonomy (deterministic v1 mapper). Nullable when not yet classified.
+  domain          String?
+  subdomain       String?
+  microTopic      String?
+  difficultySignal String?
+  formatAffinity  String?
+  intentHint      String?
+  /// Slice J — optional link to a deterministic global concept (taxonomy-keyed V1).
+  globalConceptId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceSession LearningSession? @relation(fields: [sourceSessionId], references: [id], onDelete: SetNull)
+  globalConcept GlobalConcept?   @relation(fields: [globalConceptId], references: [id], onDelete: SetNull)
+  nodes         KnowledgeNode[]
+
+  @@unique([userId, normalizedKey])
+  @@index([userId])
+  @@index([userId, updatedAt])
+  @@index([sourceSessionId])
+  @@index([userId, domain])
+  @@index([globalConceptId])
+}
+
+/// Slice J — first Global Wiki bridge: stable slug + display metadata; no article body yet.
+model GlobalConcept {
+  id           String   @id @default(cuid())
+  /// Deterministic key from taxonomy V1 (domain + subdomain + micro); unique across installs.
+  slug         String   @unique
+  displayTitle String
+  domain       String?
+  subdomain    String?
+  microTopic   String?
+  /// Optional fingerprint of mapping inputs for audits (not a uniqueness key).
+  mappingKey   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  categories KnowledgeCategory[]
+  article      GlobalConceptArticle?
+  /// Slice A — reusable feed topics linked to this global concept when taxonomy aligns.
+  globalTopicInventories GlobalTopicInventory[]
+
+  @@index([domain])
+  @@index([mappingKey])
+}
+
+/// First reusable wiki/article layer on GlobalConcept (deterministic seed V1; not full markdown wiki).
+model GlobalConceptArticle {
+  id                   String   @id @default(cuid())
+  globalConceptId      String   @unique
+  /// Increment when article shape or generation strategy changes materially.
+  schemaVersion        Int      @default(1)
+  /// Concise reusable body text (seed, not full encyclopedia).
+  summary              String   @db.Text
+  /// Short user-facing lead line.
+  hook                 String?  @db.Text
+  /// Optional structured follow-up prompts (string[] or small object).
+  relatedQuestionsJson Json?
+  /// e.g. deterministic_seed_v1, ai_enriched_v1
+  sourceType           String
+  /// Optional audit blob when AI enrichment succeeds (provider/model/time); null for seed-only rows.
+  enrichmentProvenanceJson Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  globalConcept GlobalConcept @relation(fields: [globalConceptId], references: [id], onDelete: Cascade)
+}
+
+/// Personal memory node anchored to a concrete source (e.g. one LearningSession).
+/// Idempotency: @@unique([userId, sourceType, sourceId]) — one node per user per source session for V1.
+model KnowledgeNode {
+  id           String              @id @default(cuid())
+  userId       String
+  title        String
+  summary      String?
+  kind         KnowledgeNodeKind   @default(SESSION_LESSON)
+  sourceType   KnowledgeSourceType
+  sourceId     String
+  categoryId   String?
+  metadataJson Json?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category KnowledgeCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  edgesFrom KnowledgeEdge[] @relation("KnowledgeEdgeFrom")
+  edgesTo   KnowledgeEdge[] @relation("KnowledgeEdgeTo")
+
+  @@unique([userId, sourceType, sourceId])
+  @@index([userId, createdAt])
+  @@index([userId, sourceType])
+  @@index([categoryId])
+}
+
+/// Directed edge between two knowledge nodes (Personal Brain graph, Slice D).
+/// Idempotency: @@unique([userId, fromNodeId, toNodeId, relationType, sourceType, sourceId]).
+model KnowledgeEdge {
+  id           String                @id @default(cuid())
+  userId       String
+  fromNodeId   String
+  toNodeId     String
+  relationType KnowledgeRelationType
+  weight       Float?
+  confidence   Float?
+  /// Provenance namespace for dedupe (V1: `LESSON_SESSION_GRAPH`).
+  sourceType   String
+  /// Provenance key (V1: LearningSession.id for edges created from one lesson graph sync).
+  sourceId     String
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fromNode KnowledgeNode @relation("KnowledgeEdgeFrom", fields: [fromNodeId], references: [id], onDelete: Cascade)
+  toNode   KnowledgeNode @relation("KnowledgeEdgeTo", fields: [toNodeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fromNodeId, toNodeId, relationType, sourceType, sourceId])
+  @@index([userId])
+  @@index([userId, relationType])
+  @@index([fromNodeId])
+  @@index([toNodeId])
+  @@index([sourceId])
+}
+
+// --- Slice A: global memory-first topic inventory, per-user topic state, batches, usage, credits ---
+// Feed selection / jobs / enforcement land in later slices; schema only here.
+
+enum GlobalTopicSourceType {
+  SYSTEM_SEED
+  USER_GENERATED
+  SYSTEM_REPLENISH
+  TREND_REFRESH
+}
+
+enum GlobalTopicStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum UserTopicInteractionType {
+  SEEN
+  OPENED
+  GENERATED
+  DISMISSED
+  SAVED
+}
+
+enum TopicInventoryBatchType {
+  BOOTSTRAP
+  REPLENISH
+  TREND_REFRESH
+  USER_PROMOTION
+}
+
+enum TopicInventoryBatchStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Reusable global lesson/topic row for memory-first feed (seed, replenish, promoted UGC).
+model GlobalTopicInventory {
+  id                      String                @id @default(cuid())
+  /// Stable dedupe key (e.g. normalized topic + curiosity fingerprint); unique across inventory.
+  normalizedKey         String                @unique
+  title                   String
+  curiosityHook           String?               @db.Text
+  shortSummary            String?               @db.Text
+  domain                  String?
+  subdomain               String?
+  microTopic              String?
+  categoryLabel           String?
+  sourceType              GlobalTopicSourceType
+  status                  GlobalTopicStatus     @default(ACTIVE)
+  sourceUserId            String?
+  sourceLearningSessionId String?
+  globalConceptId         String?
+  qualityScore            Float?
+  reuseEligible           Boolean               @default(true)
+  freshnessBucket         String?
+  timesSuggested          Int                   @default(0)
+  timesOpened             Int                   @default(0)
+  timesGenerated          Int                   @default(0)
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+
+  sourceUser            User?            @relation("GlobalTopicInventorySourceUser", fields: [sourceUserId], references: [id], onDelete: SetNull)
+  sourceLearningSession LearningSession? @relation("GlobalTopicInventorySourceSession", fields: [sourceLearningSessionId], references: [id], onDelete: SetNull)
+  globalConcept         GlobalConcept?   @relation(fields: [globalConceptId], references: [id], onDelete: SetNull)
+  userTopicStates       UserTopicState[]
+  /// Sessions the user explicitly started from this feed topic (Slice G).
+  learningSessionsFromFeedTopic LearningSession[] @relation("LearningSessionSourceGlobalTopic")
+
+  @@index([status, reuseEligible])
+  @@index([domain, subdomain])
+  @@index([sourceType])
+  @@index([globalConceptId])
+  @@index([createdAt])
+}
+
+/// Per-user exposure and actions for a global inventory topic (feed dedupe / state machine later).
+model UserTopicState {
+  id                  String                   @id @default(cuid())
+  userId              String
+  globalTopicId       String
+  firstSeenAt         DateTime?
+  lastSeenAt          DateTime?
+  openedAt            DateTime?
+  generatedAt         DateTime?
+  dismissedAt         DateTime?
+  savedAt             DateTime?
+  lastInteractionType UserTopicInteractionType?
+  seenCount           Int                      @default(0)
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  globalTopic GlobalTopicInventory @relation(fields: [globalTopicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, globalTopicId])
+  @@index([userId])
+  @@index([userId, lastSeenAt])
+  @@index([globalTopicId])
+}
+
+/// Audit trail for bootstrap / replenish / promotion batches (orchestration in later slices).
+model TopicInventoryBatch {
+  id              String                   @id @default(cuid())
+  batchType       TopicInventoryBatchType
+  requestedCount  Int
+  acceptedCount   Int                      @default(0)
+  rejectedCount   Int                      @default(0)
+  domainHint      String?
+  subdomainHint   String?
+  status          TopicInventoryBatchStatus @default(PENDING)
+  startedAt       DateTime                 @default(now())
+  finishedAt      DateTime?
+  metadataJson    Json?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  @@index([status, batchType])
+  @@index([createdAt])
+}
+
+/// Daily metered fresh-generation counters (UTC date bucket; enforcement in later slices).
+model UserGenerationUsageDaily {
+  id                      String   @id @default(cuid())
+  userId                  String
+  usageDate               DateTime @db.Date
+  freshGenerationsUsed    Int      @default(0)
+  /// Free-tier daily learning starts (new lesson flow), independent of global memory reuse.
+  learningStartsUsed      Int      @default(0)
+  gpt4oMiniShortPacksUsed Int      @default(0)
+  gpt54ShortPacksUsed     Int      @default(0)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, usageDate])
+  @@index([userId])
+}
+
+/// Monthly creator / premium generation counters (`periodMonth` format `YYYY-MM`).
+model UserCreatorUsageMonthly {
+  id                     String   @id @default(cuid())
+  userId                 String
+  periodMonth            String   @db.VarChar(7)
+  creatorMinutesUsed     Int      @default(0)
+  premiumGenerationsUsed Int      @default(0)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, periodMonth])
+  @@index([userId])
+}
+
+/// Render credits + optional bonus pool (credits-based rendering; enforcement later).
+model UserCreditWallet {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  renderCreditsBalance Int      @default(0)
+  bonusCreditsBalance  Int?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// --- Creator / video pack layer: global reusable system originals + per-user private edits ---
+
+enum CreatorPackKind {
+  SHORT_FORM
+  LONG_FORM
+}
+
+enum CreatorGlobalMemoryPromotionStatus {
+  NONE
+  CANDIDATE
+  ACTIVE
+  REJECTED
+}
+
+/// Canonical system-generated creator pack for cross-user reuse (`lookupKey` from normalized facets; never user-edited variants).
+model GlobalCreatorMemory {
+  id                 String                           @id @default(cuid())
+  lookupKey          String                           @unique
+  keyFacetsJson      Json
+  packKind           CreatorPackKind
+  originalPackJson   Json
+  schemaVersion      Int                              @default(1)
+  promotionStatus    CreatorGlobalMemoryPromotionStatus @default(ACTIVE)
+  sourceUserId       String?
+  provenanceJson     Json?
+  qualitySignalsJson Json?
+  createdAt          DateTime                         @default(now())
+  updatedAt          DateTime                         @updatedAt
+
+  sourceUser       User?            @relation("GlobalCreatorMemorySourceUser", fields: [sourceUserId], references: [id], onDelete: SetNull)
+  linkedUserPacks  UserCreatorPack[] @relation("UserCreatorPackGlobalLink")
+  reusedUserPacks  UserCreatorPack[] @relation("UserCreatorPackGlobalReuse")
+
+  @@index([packKind, promotionStatus])
+  @@index([createdAt])
+}
+
+/// Per-user creator run: immutable `systemOriginalJson`, optional private `userEditedJson`; reuse/promotion links to `GlobalCreatorMemory`.
+model UserCreatorPack {
+  id                       String   @id @default(cuid())
+  userId                   String
+  learningSessionId        String?
+  requestJson              Json
+  durationBand             String   @db.VarChar(32)
+  packKind                 CreatorPackKind
+  systemOriginalJson       Json
+  userEditedJson           Json?
+  reusedFromGlobalId       String?
+  linkedGlobalMemoryId     String?
+  generationProvenanceJson Json?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  learningSession    LearningSession?     @relation(fields: [learningSessionId], references: [id], onDelete: SetNull)
+  reusedFromGlobal   GlobalCreatorMemory? @relation("UserCreatorPackGlobalReuse", fields: [reusedFromGlobalId], references: [id], onDelete: SetNull)
+  linkedGlobalMemory GlobalCreatorMemory? @relation("UserCreatorPackGlobalLink", fields: [linkedGlobalMemoryId], references: [id], onDelete: SetNull)
+  renderJobs         RenderJob[]
+
+  @@index([userId, createdAt])
+  @@index([learningSessionId])
+}
+
+// --- Render pipeline (heavy compute): credits, provider jobs, outputs ---
+
+enum RenderJobStatus {
+  QUEUED
+  SUBMITTED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+enum RenderProviderKind {
+  KLING
+  KLING_STUB
+}
+
+enum RenderPackSourceIntent {
+  SYSTEM_ORIGINAL
+  USER_EDITED_PRIVATE
+}
+
+/// One user-originated video render attempt from a creator pack (credits + provider lifecycle).
+model RenderJob {
+  id                          String                 @id @default(cuid())
+  userId                      String
+  creatorPackId               String
+  learningSessionId           String?
+  provider                    RenderProviderKind
+  providerJobId               String?                @db.VarChar(512)
+  status                      RenderJobStatus        @default(QUEUED)
+  /// Product intent, e.g. `video_creator_pack_v1` (provider-agnostic).
+  renderKind                  String                 @db.VarChar(64)
+  targetDurationSec           Int
+  targetPlatform              String                 @db.VarChar(64)
+  requestedWithEditedPack     Boolean
+  sourcePackIntent            RenderPackSourceIntent
+  creditCost                  Int
+  consumedCreditLedgerEntryId String?                @unique
+  refundLedgerEntryId         String?                @unique
+  outputUrl                   String?                @db.Text
+  thumbnailUrl                String?                @db.Text
+  metadataJson                Json?
+  failureReason               String?                @db.Text
+  idempotencyKey              String?                @db.VarChar(128)
+  createdAt                   DateTime               @default(now())
+  updatedAt                   DateTime               @updatedAt
+
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creatorPack       UserCreatorPack  @relation(fields: [creatorPackId], references: [id], onDelete: Cascade)
+  learningSession   LearningSession? @relation(fields: [learningSessionId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([creatorPackId])
+  @@index([provider, providerJobId])
 }
 
 // Add models as features land; run migrations against RDS (or a CI mirror of the same engine).

@@ -1,6 +1,7 @@
 import { getModelRoute, runAiTask } from "../router/model-router.service";
 import { classifyTaskType } from "../router/task-classifier";
 import type { PlanTier } from "../providers/ai-provider.types";
+import type { LessonPersonalMemoryContext } from "../../knowledge-engine/knowledge-engine.types";
 
 type GenerateLessonWithAiInput = {
   userId: string;
@@ -10,6 +11,8 @@ type GenerateLessonWithAiInput = {
   tone?: string;
   language?: string;
   planTier?: PlanTier;
+  /** Slice B: optional compact learner memory — prompt-only, does not change JSON response shape. */
+  personalMemoryContext?: LessonPersonalMemoryContext;
 };
 
 type LessonQuizQuestion = {
@@ -205,8 +208,37 @@ Return STRICT JSON with this exact shape:
 `.trim();
 }
 
+function buildPersonalMemoryInstructionBlock(ctx: LessonPersonalMemoryContext): string {
+  const modeText: Record<LessonPersonalMemoryContext["learningGoalMode"], string> = {
+    novelty:
+      "Learner may be exploring a new angle; keep the core lesson fresh. If a distant prior theme appears in memory highlights, mention it only as a light motivational bridge (do not retread it).",
+    reinforcement:
+      "Learner is likely revisiting this thread: strengthen clarity, connect explicitly to earlier ideas in the highlights, and avoid empty repetition while deepening mastery.",
+    gentle_repetition:
+      "Spiral gently from relevant prior ideas using new hooks; brief callbacks are welcome when they increase insight.",
+  };
+
+  const lines = [
+    "Learner memory snapshot (high-level only; paraphrase in your own words; JSON output shape unchanged):",
+    `- suggestedLearningMode: ${ctx.learningGoalMode}`,
+    `- modeIntent: ${modeText[ctx.learningGoalMode]}`,
+  ];
+  if (ctx.categoryTaxonomyHint !== undefined && ctx.categoryTaxonomyHint.length > 0) {
+    lines.push(`- categoryThreadHint: ${ctx.categoryTaxonomyHint}`);
+  }
+  lines.push(
+    "- memoryHighlights:",
+    ...ctx.memoryBullets.map((b) => `  - ${b}`),
+  );
+  if (ctx.graphHints !== undefined && ctx.graphHints.length > 0) {
+    lines.push("- nearbyIdeas (personal knowledge graph; paraphrase only):");
+    lines.push(...ctx.graphHints.map((b) => `  - ${b}`));
+  }
+  return lines.join("\n");
+}
+
 function buildUserPrompt(input: GenerateLessonWithAiInput): string {
-  return `
+  const base = `
 Create a structured learning lesson.
 
 Topic: ${input.topic}
@@ -222,6 +254,12 @@ Additional instructions:
 - Keep the output practical and suitable for a learning app.
 - Return JSON only.
 `.trim();
+
+  if (!input.personalMemoryContext) {
+    return base;
+  }
+
+  return `${base}\n\n${buildPersonalMemoryInstructionBlock(input.personalMemoryContext)}`;
 }
 
 function buildDraftSystemPrompt(): string {
@@ -450,7 +488,10 @@ export async function generateLessonWithQualityPipeline(
           content:
             `Original draft lesson:\n${JSON.stringify(draftLesson)}\n\n` +
             `Critic feedback:\n${JSON.stringify(critic)}\n\n` +
-            "Apply improvements and return final JSON lesson.",
+            "Apply improvements and return final JSON lesson." +
+            (input.personalMemoryContext
+              ? `\n\n${buildPersonalMemoryInstructionBlock(input.personalMemoryContext)}`
+              : ""),
         },
       ],
       metadata: {

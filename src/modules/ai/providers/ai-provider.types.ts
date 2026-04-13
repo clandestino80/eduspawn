@@ -1,5 +1,7 @@
 export const AI_TASK_TYPES = [
   "lesson_generation",
+  "knowledge_extraction",
+  "global_concept_article_enrichment",
   "quiz_generation",
   "short_video_script",
   "carousel_post",
@@ -7,6 +9,10 @@ export const AI_TASK_TYPES = [
   "image_prompt",
   "long_video_script",
   "critic_review",
+  /** Structured short-form creator pack (JSON); distinct from legacy `short_video_script` text flow. */
+  "creator_pack_short",
+  /** Structured long-form creator pack (JSON); orchestration-only, not final render. */
+  "creator_pack_long",
 ] as const;
 
 export type AiTaskType = (typeof AI_TASK_TYPES)[number];

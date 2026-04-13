@@ -88,6 +88,7 @@ function normalizePlanTier(value?: string | null): PlanTier {
  * - SHORT_VIDEO_FREE_MODEL / SHORT_VIDEO_PRO_MODEL / SHORT_VIDEO_PREMIUM_MODEL
  * - LONG_VIDEO_FREE_MODEL / LONG_VIDEO_PRO_MODEL / LONG_VIDEO_PREMIUM_MODEL
  * - CRITIC_FREE_MODEL / CRITIC_PRO_MODEL / CRITIC_PREMIUM_MODEL
+ * - KNOWLEDGE_EXTRACTION_FREE_MODEL / KNOWLEDGE_EXTRACTION_PRO_MODEL / KNOWLEDGE_EXTRACTION_PREMIUM_MODEL
  * - QUIZ_FREE_MODEL / QUIZ_PRO_MODEL / QUIZ_PREMIUM_MODEL
  * - CAROUSEL_FREE_MODEL / CAROUSEL_PRO_MODEL / CAROUSEL_PREMIUM_MODEL
  * - NARRATION_FREE_MODEL / NARRATION_PRO_MODEL / NARRATION_PREMIUM_MODEL
@@ -337,6 +338,116 @@ const ROUTING_TABLE: Record<AiTaskType, RouteByTier> = {
     },
   },
 
+  knowledge_extraction: {
+    free: {
+      provider: "openai",
+      model: resolveModel(
+        [
+          "KNOWLEDGE_EXTRACTION_FREE_MODEL",
+          "OPENAI_QUIZ_MODEL",
+          "OPENAI_MODEL_FAST",
+          "OPENAI_MODEL",
+        ],
+        MODELS.openaiFast,
+      ),
+      reasoning:
+        "Free tier extraction uses OpenAI JSON mode (same credential stack as lesson_generation free) for reliable structured concepts.",
+      maxTokens: 900,
+      temperature: 0.25,
+      qualityLevel: "low_cost",
+      responseFormat: "json",
+    },
+    pro: {
+      provider: "openai",
+      model: resolveModel(
+        [
+          "KNOWLEDGE_EXTRACTION_PRO_MODEL",
+          "OPENAI_QUIZ_MODEL",
+          "OPENAI_MODEL_FAST",
+          "OPENAI_MODEL",
+        ],
+        MODELS.openaiFast,
+      ),
+      reasoning: "Pro tier extraction favors consistent JSON and cleaner atomic concepts.",
+      maxTokens: 1200,
+      temperature: 0.2,
+      qualityLevel: "standard",
+      responseFormat: "json",
+    },
+    premium: {
+      provider: "anthropic",
+      model: resolveModel(
+        [
+          "KNOWLEDGE_EXTRACTION_PREMIUM_MODEL",
+          "ANTHROPIC_QUIZ_MODEL",
+          "ANTHROPIC_MODEL_BALANCED",
+          "ANTHROPIC_MODEL",
+        ],
+        MODELS.anthropicBalanced,
+      ),
+      reasoning: "Premium extraction uses a stronger model for higher-precision atomic summaries.",
+      maxTokens: 1600,
+      temperature: 0.18,
+      qualityLevel: "high",
+      responseFormat: "json",
+    },
+  },
+
+  global_concept_article_enrichment: {
+    free: {
+      provider: "openai",
+      model: resolveModel(
+        [
+          "GLOBAL_CONCEPT_ARTICLE_ENRICHMENT_FREE_MODEL",
+          "KNOWLEDGE_EXTRACTION_FREE_MODEL",
+          "OPENAI_MODEL_FAST",
+          "OPENAI_MODEL",
+        ],
+        MODELS.openaiFast,
+      ),
+      reasoning:
+        "Bounded JSON enrichment for shared GlobalConceptArticle seeds: short hook, compact summary, few follow-up questions.",
+      maxTokens: 900,
+      temperature: 0.28,
+      qualityLevel: "low_cost",
+      responseFormat: "json",
+    },
+    pro: {
+      provider: "openai",
+      model: resolveModel(
+        [
+          "GLOBAL_CONCEPT_ARTICLE_ENRICHMENT_PRO_MODEL",
+          "KNOWLEDGE_EXTRACTION_PRO_MODEL",
+          "OPENAI_MODEL_FAST",
+          "OPENAI_MODEL",
+        ],
+        MODELS.openaiFast,
+      ),
+      reasoning: "Pro tier uses the same economical stack with a slightly higher token budget for cleaner phrasing.",
+      maxTokens: 1100,
+      temperature: 0.24,
+      qualityLevel: "standard",
+      responseFormat: "json",
+    },
+    premium: {
+      provider: "anthropic",
+      model: resolveModel(
+        [
+          "GLOBAL_CONCEPT_ARTICLE_ENRICHMENT_PREMIUM_MODEL",
+          "KNOWLEDGE_EXTRACTION_PREMIUM_MODEL",
+          "ANTHROPIC_MODEL_BALANCED",
+          "ANTHROPIC_MODEL",
+        ],
+        MODELS.anthropicBalanced,
+      ),
+      reasoning: "Premium enrichment may use a stronger model for tighter pedagogy on shared concept overviews.",
+      maxTokens: 1400,
+      temperature: 0.22,
+      qualityLevel: "high",
+      responseFormat: "json",
+    },
+  },
+
   quiz_generation: {
     free: {
       provider: "gemini",
@@ -512,6 +623,110 @@ const ROUTING_TABLE: Record<AiTaskType, RouteByTier> = {
       maxTokens: 1400,
       temperature: 0.65,
       qualityLevel: "premium",
+      responseFormat: "json",
+    },
+  },
+
+  creator_pack_short: {
+    free: {
+      provider: "openai",
+      model: resolveModel(
+        [
+          "CREATOR_PACK_SHORT_FREE_MODEL",
+          "SHORT_VIDEO_FREE_MODEL",
+          "OPENAI_MODEL_FAST",
+          "OPENAI_MODEL",
+        ],
+        MODELS.openaiFast,
+      ),
+      reasoning: "Free creator short packs: compact JSON script/hook fields via economical model.",
+      maxTokens: 1200,
+      temperature: 0.72,
+      qualityLevel: "low_cost",
+      responseFormat: "json",
+    },
+    pro: {
+      provider: "openai",
+      model: resolveModel(
+        [
+          "CREATOR_PACK_SHORT_PRO_MODEL",
+          "SHORT_VIDEO_PRO_MODEL",
+          "OPENAI_MODEL_SMART",
+          "OPENAI_MODEL",
+        ],
+        MODELS.openaiSmart,
+      ),
+      reasoning: "Pro creator short packs: stronger hooks and pacing while staying bounded JSON.",
+      maxTokens: 1600,
+      temperature: 0.68,
+      qualityLevel: "high",
+      responseFormat: "json",
+    },
+    premium: {
+      provider: "anthropic",
+      model: resolveModel(
+        [
+          "CREATOR_PACK_SHORT_PREMIUM_MODEL",
+          "SHORT_VIDEO_PREMIUM_MODEL",
+          "ANTHROPIC_MODEL_BALANCED",
+          "ANTHROPIC_MODEL",
+        ],
+        MODELS.anthropicBalanced,
+      ),
+      reasoning: "Premium short creator JSON packs favor clarity and platform-native rhythm.",
+      maxTokens: 2000,
+      temperature: 0.65,
+      qualityLevel: "premium",
+      responseFormat: "json",
+    },
+  },
+
+  creator_pack_long: {
+    free: {
+      provider: "openai",
+      model: resolveModel(
+        ["CREATOR_PACK_LONG_FREE_MODEL", "OPENAI_MODEL_FAST", "OPENAI_MODEL"],
+        MODELS.openaiFast,
+      ),
+      reasoning: "Long creator packs are not served on free tier at orchestration level; route should not be used.",
+      maxTokens: 800,
+      temperature: 0.5,
+      qualityLevel: "low_cost",
+      responseFormat: "json",
+    },
+    pro: {
+      provider: "anthropic",
+      model: resolveModel(
+        [
+          "CREATOR_PACK_LONG_PRO_MODEL",
+          "LONG_VIDEO_PRO_MODEL",
+          "ANTHROPIC_MODEL_BALANCED",
+          "ANTHROPIC_MODEL",
+        ],
+        MODELS.anthropicBalanced,
+      ),
+      reasoning: "Pro long-form creator JSON: structured scenes, narration, and visual prompt packs (no render).",
+      maxTokens: 6000,
+      temperature: 0.48,
+      qualityLevel: "high",
+      responseFormat: "json",
+    },
+    premium: {
+      provider: "anthropic",
+      model: resolveModel(
+        [
+          "CREATOR_PACK_LONG_PREMIUM_MODEL",
+          "LONG_VIDEO_PREMIUM_MODEL",
+          "ANTHROPIC_MODEL_PREMIUM",
+          "ANTHROPIC_MODEL_BALANCED",
+          "ANTHROPIC_MODEL",
+        ],
+        MODELS.anthropicPremium,
+      ),
+      reasoning: "Premium long-form creator JSON with higher token budget for dense scene work (still not video render).",
+      maxTokens: 8000,
+      temperature: 0.45,
+      qualityLevel: "multi_pass",
       responseFormat: "json",
     },
   },

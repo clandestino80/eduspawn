@@ -1,7 +1,25 @@
 import type { Prisma, LearningSession } from "@prisma/client";
 import { generateContentFromLesson } from "./content-generator.service";
+import { getEnv } from "../../config/env";
 import { AppError } from "../../lib/errors";
 import { prisma } from "../../lib/prisma";
+import { canConsumeCreatorMinutes, consumeCreatorMinutes } from "../entitlements/services/creator-quota.service";
+import {
+  canConsumeRenderCredits,
+  consumeRenderCredits,
+  getOrCreateUserCreditWallet,
+} from "../entitlements/services/credit-wallet.service";
+import {
+  doesRenderRequireCredits,
+  getLongformRenderCreditCost,
+  getUserPlanTier,
+} from "../entitlements/services/entitlement.service";
+import {
+  canConsumeFreshGeneration,
+  canConsumeLearningStart,
+  consumeFreshGeneration,
+  consumeLearningStart,
+} from "../entitlements/services/generation-meter.service";
 import {
   generateLessonWithQualityPipeline,
 } from "../ai/services/lesson-ai.service";
@@ -10,6 +28,7 @@ import {
   generateQuizWithAI,
   parseQuizQuestionsFromMeta,
 } from "../ai/services/quiz-ai.service";
+import { assessmentMetaSchema, type AssessmentMeta, type McqQuestion } from "../ai/schemas/quiz-output.schema";
 import type { PlanTier } from "../ai/providers/ai-provider.types";
 import type {
   CreateContentOutputInput,
@@ -24,6 +43,19 @@ import {
   longformVideoResultSchema,
   type LongformVideoResult,
 } from "../ai/schemas/longform-output.schema";
+import { assembleLessonPersonalMemoryContext } from "../knowledge-engine/services/knowledge-context.service";
+import { extractAndPersistLessonKnowledgeAtoms } from "../knowledge-engine/services/knowledge-extraction.service";
+import {
+  recordLessonGeneratedDnaSignals,
+  recordQuizAssessmentDnaSignals,
+} from "../knowledge-engine/services/knowledge-dna.service";
+import { syncLessonKnowledgeEdges } from "../knowledge-engine/services/knowledge-edge.service";
+import { logKnowledgeEnginePostGenerateDigest } from "../knowledge-engine/knowledge-engine-generate-digest";
+import { findGlobalTopicInventoryIdExists } from "../knowledge-engine/repositories/global-topic-inventory.repository";
+import { invalidateTopicFeedCacheForUser } from "../knowledge-engine/services/topic-feed-cache.service";
+import { persistGeneratedLessonKnowledge } from "../knowledge-engine/services/knowledge-persist.service";
+import { applySourceTopicGeneratedAfterLesson } from "./core-lesson-source-topic.service";
+import { logProductEvent } from "../../lib/product-log";
 
 /** Persists structured quiz without a LearningSession schema migration (see metaJson). */
 const SESSION_QUIZ_OUTPUT_TYPE = "ai_generated_quiz";
@@ -52,16 +84,6 @@ async function getOwnedSessionOrThrow(
   });
 
   return assertOwnedSession(userId, session);
-}
-
-function resolvePlanTierForUser(userId: string): PlanTier {
-  const envTier = (process.env.DEFAULT_PLAN_TIER ?? "").toLowerCase();
-  if (envTier === "pro" || envTier === "premium" || envTier === "free") {
-    return envTier;
-  }
-  // Placeholder until subscription table is introduced.
-  void userId;
-  return "free";
 }
 
 function buildLongformReadableContent(longform: LongformVideoResult): string {
@@ -131,6 +153,15 @@ export async function createLearningSession(
   userId: string,
   input: CreateLearningSessionInput,
 ) {
+  if (input.sourceGlobalTopicId !== undefined) {
+    const topicId = await findGlobalTopicInventoryIdExists(input.sourceGlobalTopicId);
+    if (!topicId) {
+      throw new AppError(400, "Unknown feed topic id.", {
+        code: "INVALID_SOURCE_GLOBAL_TOPIC",
+      });
+    }
+  }
+
   const session = await prisma.learningSession.create({
     data: {
       userId,
@@ -140,6 +171,9 @@ export async function createLearningSession(
         ? { difficulty: input.difficulty }
         : {}),
       ...(input.tone !== undefined ? { tone: input.tone } : {}),
+      ...(input.sourceGlobalTopicId !== undefined
+        ? { sourceGlobalTopicId: input.sourceGlobalTopicId }
+        : {}),
       status: "created",
     },
   });
@@ -169,17 +203,139 @@ export async function getLearningSession(userId: string, sessionId: string) {
   return session;
 }
 
-export async function generateLessonForSession(
+export type LessonGenerateResponse = {
+  session: LearningSession;
+  lesson: {
+    lessonTitle: string;
+    lessonSummary: string;
+    lessonBody: string;
+    wowFacts: string[];
+    quizQuestions: Array<{ type: "mcq"; question: string; options: string[]; answer: string }>;
+  };
+  quiz: {
+    questions: McqQuestion[];
+    assessmentMeta: AssessmentMeta;
+  };
+  aiMeta: unknown;
+  qualityMeta: unknown;
+};
+
+function parseAssessmentMetaFromQuizContentMeta(meta: unknown): AssessmentMeta | null {
+  if (!meta || typeof meta !== "object") return null;
+  const rec = meta as Record<string, unknown>;
+  const p = assessmentMetaSchema.safeParse(rec.assessmentMeta);
+  return p.success ? p.data : null;
+}
+
+async function tryReturnCachedLessonGenerateResult(
   userId: string,
-  sessionId: string,
-) {
+  session: LearningSession,
+): Promise<LessonGenerateResponse | null> {
+  if (session.status !== "generated" || !session.lessonBody?.trim()) {
+    return null;
+  }
+  const fresh = await prisma.learningSession.findFirst({
+    where: { id: session.id, userId },
+    include: {
+      contentOutputs: {
+        where: { outputType: SESSION_QUIZ_OUTPUT_TYPE },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
+    },
+  });
+  if (!fresh) {
+    return null;
+  }
+
+  const quizOut = fresh.contentOutputs[0];
+  const questions = parseQuizQuestionsFromMeta(quizOut?.metaJson) ?? [];
+  const assessmentMeta =
+    parseAssessmentMetaFromQuizContentMeta(quizOut?.metaJson) ??
+    ({
+      provider: "cached",
+      model: "n/a",
+      routeReason: "idempotent_lesson_response",
+      questionCount: questions.length,
+    } satisfies AssessmentMeta);
+
+  return {
+    session: fresh,
+    lesson: {
+      lessonTitle: fresh.lessonTitle ?? "",
+      lessonSummary: fresh.lessonSummary ?? "",
+      lessonBody: fresh.lessonBody ?? "",
+      wowFacts: [],
+      quizQuestions: [],
+    },
+    quiz: { questions, assessmentMeta },
+    aiMeta: null,
+    qualityMeta: null,
+  };
+}
+
+export async function generateLessonForSession(userId: string, sessionId: string): Promise<LessonGenerateResponse> {
   const session = await getOwnedSessionOrThrow(userId, sessionId);
+
+  const cached = await tryReturnCachedLessonGenerateResult(userId, session);
+  if (cached) {
+    logProductEvent("lesson_generate_idempotent", { userId, sessionId: session.id });
+    return cached;
+  }
+
+  const planTier = await getUserPlanTier(userId);
+
+  if (planTier === "free") {
+    const ls = await canConsumeLearningStart(userId, 1);
+    if (!ls.ok) {
+      throw new AppError(429, "Daily learning start limit reached. Try again tomorrow or upgrade your plan.", {
+        code: "LEARNING_STARTS_EXHAUSTED",
+        details: {
+          used: ls.snapshot.used,
+          limit: ls.snapshot.limit,
+          planTier: ls.snapshot.planTier,
+          usageDate: ls.snapshot.usageDate,
+        },
+      });
+    }
+  } else {
+    const meter = await canConsumeFreshGeneration(userId, 1);
+    if (!meter.ok) {
+      throw new AppError(429, "Daily fresh generation limit reached. Try again tomorrow or upgrade your plan.", {
+        code: "FRESH_GENERATION_QUOTA_EXCEEDED",
+        details: {
+          used: meter.snapshot.used,
+          limit: meter.snapshot.limit,
+          planTier: meter.snapshot.planTier,
+        },
+      });
+    }
+  }
 
   const learningDna = await prisma.learningDNA.findUnique({
     where: { userId },
   });
 
-  const planTier = resolvePlanTierForUser(userId);
+  let personalMemoryContext: Awaited<
+    ReturnType<typeof assembleLessonPersonalMemoryContext>
+  >;
+  try {
+    personalMemoryContext = await assembleLessonPersonalMemoryContext({
+      userId,
+      session: {
+        id: session.id,
+        topic: session.topic,
+        curiosityPrompt: session.curiosityPrompt,
+      },
+    });
+  } catch (error) {
+    personalMemoryContext = undefined;
+    console.error("[knowledge_context_assembly_failed]", {
+      sessionId: session.id,
+      userId,
+      error,
+    });
+  }
 
   const aiLesson = await generateLessonWithQualityPipeline({
     userId,
@@ -195,6 +351,7 @@ export async function generateLessonForSession(
       "friendly",
     language: learningDna?.language ?? "tr",
     planTier,
+    ...(personalMemoryContext ? { personalMemoryContext } : {}),
   });
 
   const quizPack = await generateQuizWithAI({
@@ -227,6 +384,118 @@ export async function generateLessonForSession(
   });
 
   try {
+    if (planTier === "free") {
+      await consumeLearningStart(userId, 1);
+    } else {
+      await consumeFreshGeneration(userId, 1);
+    }
+  } catch (error) {
+    console.error("[lesson_generation_meter_consume_failed]", { userId, sessionId: session.id, planTier, error });
+  }
+
+  try {
+    invalidateTopicFeedCacheForUser(userId);
+  } catch (error) {
+    console.error("[topic_feed_cache_invalidate_failed]", { userId, sessionId: session.id, error });
+  }
+
+  await applySourceTopicGeneratedAfterLesson({
+    userId,
+    sourceGlobalTopicId: session.sourceGlobalTopicId,
+  });
+
+  const keEnv = getEnv();
+  console.info("[knowledge_engine_generate_flags]", {
+    sessionId: updated.id,
+    userId,
+    KNOWLEDGE_ENGINE_ENABLED: keEnv.KNOWLEDGE_ENGINE_ENABLED,
+    KNOWLEDGE_CONTEXT_INJECTION_ENABLED: keEnv.KNOWLEDGE_CONTEXT_INJECTION_ENABLED,
+    smokeNote:
+      "KNOWLEDGE_ENGINE_ENABLED gates persist + extraction + edge writes. KNOWLEDGE_CONTEXT_INJECTION_ENABLED only affects memory assembly before this lesson's AI call.",
+  });
+
+  try {
+    await persistGeneratedLessonKnowledge({
+      userId,
+      session: {
+        id: updated.id,
+        topic: session.topic,
+        curiosityPrompt: session.curiosityPrompt,
+        difficulty: session.difficulty,
+      },
+      lesson: {
+        lessonTitle: aiLesson.lessonTitle,
+        lessonSummary: aiLesson.lessonSummary,
+        lessonBody: aiLesson.lessonBody,
+        wowFacts: aiLesson.wowFacts,
+      },
+    });
+  } catch (error) {
+    console.error("[knowledge_engine_persist_failed]", {
+      sessionId: updated.id,
+      userId,
+      error,
+    });
+  }
+
+  try {
+    await extractAndPersistLessonKnowledgeAtoms({
+      userId,
+      planTier,
+      session: {
+        id: updated.id,
+        topic: session.topic,
+        curiosityPrompt: session.curiosityPrompt,
+        difficulty: session.difficulty,
+      },
+      lesson: {
+        lessonTitle: aiLesson.lessonTitle,
+        lessonSummary: aiLesson.lessonSummary,
+        lessonBody: aiLesson.lessonBody,
+      },
+    });
+  } catch (error) {
+    console.error("[knowledge_extraction_failed]", {
+      sessionId: updated.id,
+      userId,
+      error,
+    });
+  }
+
+  try {
+    await syncLessonKnowledgeEdges({
+      userId,
+      sessionId: updated.id,
+    });
+  } catch (error) {
+    console.error("[knowledge_edge_sync_failed]", {
+      sessionId: updated.id,
+      userId,
+      error,
+    });
+  }
+
+  await logKnowledgeEnginePostGenerateDigest({
+    userId,
+    sessionId: updated.id,
+  });
+
+  try {
+    await recordLessonGeneratedDnaSignals({
+      userId,
+      sessionId: updated.id,
+      topic: session.topic,
+      curiosityPrompt: session.curiosityPrompt,
+    });
+  } catch (error) {
+    console.error("[knowledge_dna_lesson_integration_failed]", {
+      sessionId: updated.id,
+      userId,
+      error,
+    });
+  }
+
+  try {
     await prisma.contentOutput.create({
       data: {
         userId,
@@ -250,6 +519,12 @@ export async function generateLessonForSession(
     sessionId: session.id,
     planTier,
     qualityMeta: aiLesson.qualityMeta,
+  });
+
+  logProductEvent("lesson_generate_success", {
+    userId,
+    sessionId: updated.id,
+    planTier,
   });
 
   return {
@@ -324,6 +599,19 @@ export async function createQuizAttemptForSession(
     },
   });
 
+  try {
+    await recordQuizAssessmentDnaSignals({
+      userId,
+      score: assessment.score,
+    });
+  } catch (error) {
+    console.error("[knowledge_dna_quiz_integration_failed]", {
+      sessionId,
+      userId,
+      error,
+    });
+  }
+
   return {
     quizAttempt: attempt,
     assessment,
@@ -351,7 +639,7 @@ export async function createContentOutputForSession(
       lessonBody: session.lessonBody,
     },
     {
-      planTier: resolvePlanTierForUser(userId),
+      planTier: await getUserPlanTier(userId),
     },
   );
 
@@ -409,7 +697,7 @@ export async function createLongformOutputForSession(
     where: { userId },
   });
 
-  const planTier = resolvePlanTierForUser(userId);
+  const planTier = await getUserPlanTier(userId);
 
   const difficulty =
     session.difficulty ?? learningDna?.preferredDifficulty ?? "beginner";
@@ -419,6 +707,32 @@ export async function createLongformOutputForSession(
     learningDna?.preferredTone ??
     "friendly";
   const language = learningDna?.language ?? "tr";
+
+  if (planTier === "pro" || planTier === "premium") {
+    const cm = await canConsumeCreatorMinutes(userId, input.durationMinutes);
+    if (!cm.ok) {
+      throw new AppError(429, "Monthly creator minutes limit reached for your plan.", {
+        code: "CREATOR_MINUTES_EXHAUSTED",
+        details: {
+          usedMinutes: cm.snapshot.usedMinutes,
+          limitMinutes: cm.snapshot.limitMinutes,
+          planTier: cm.snapshot.planTier,
+        },
+      });
+    }
+  }
+
+  if (doesRenderRequireCredits("longform")) {
+    const cost = getLongformRenderCreditCost();
+    await getOrCreateUserCreditWallet(userId);
+    const rc = await canConsumeRenderCredits(userId, cost);
+    if (!rc.ok) {
+      throw new AppError(402, "Insufficient render credits for long-form generation.", {
+        code: "RENDER_CREDITS_EXHAUSTED",
+        details: { balance: rc.balance, cost },
+      });
+    }
+  }
 
   let longform = await generateLongformVideoWithAI({
     userId,
@@ -450,6 +764,31 @@ export async function createLongformOutputForSession(
       metaJson: longform as unknown as Prisma.InputJsonValue,
     },
   });
+
+  if (planTier === "pro" || planTier === "premium") {
+    try {
+      await consumeCreatorMinutes(userId, input.durationMinutes);
+    } catch (error) {
+      console.error("[creator_minutes_consume_failed]", {
+        userId,
+        sessionId,
+        durationMinutes: input.durationMinutes,
+        error,
+      });
+    }
+  }
+
+  if (doesRenderRequireCredits("longform")) {
+    const cost = getLongformRenderCreditCost();
+    try {
+      await consumeRenderCredits(userId, cost, {
+        reason: "longform_render",
+        source: "longform_output",
+      });
+    } catch (error) {
+      console.error("[render_credits_consume_failed]", { userId, sessionId, cost, error });
+    }
+  }
 
   return { longform };
 }
